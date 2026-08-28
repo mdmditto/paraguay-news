@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from collectors.abc import discover_articles as discover_abc
 from collectors.ultimahora import discover_articles as discover_uh
 from collectors.lanacion import discover_articles as discover_ln
@@ -13,10 +15,14 @@ from extraction.article import extract_article
 from extraction.normalize import normalize_article
 
 from database.repository import (
-    article_exists,
+    create_article,
+    get_article_info_by_url,
     get_source_by_domain,
-    save_article,
+    update_article_if_changed,
 )
+
+
+REVISION_WINDOW = timedelta(hours=24)
 
 
 SOURCES = [
@@ -45,7 +51,8 @@ SOURCES = [
         "domain": "npy.com.py",
         "collector": discover_npy,
     },
-    {   "name": "UNICANAL",
+    {
+        "name": "UNICANAL",
         "domain": "unicanal.com.py",
         "collector": discover_unicanal,
     },
@@ -59,14 +66,16 @@ SOURCES = [
         "domain": "monumental.com.py",
         "collector": discover_monumental,
     },
-    {   "name": "5 días",
+    {
+        "name": "5 días",
         "domain": "5dias.com.py",
         "collector": discover_cincodias,
     },
-    {   "name": "Telefuturo",
+    {
+        "name": "Telefuturo",
         "domain": "telefuturo.com.py",
         "collector": discover_telefuturo,
-    }
+    },
 ]
 
 
@@ -88,12 +97,15 @@ def collect_source(source_config):
 
         return {
             "new": 0,
-            "skipped": 0,
+            "updated": 0,
+            "unchanged": 0,
+            "old": 0,
             "failed": 1,
         }
 
     try:
         discovered = source_config["collector"]()
+
     except Exception as exc:
         print(
             f"Discovery failed for "
@@ -102,7 +114,9 @@ def collect_source(source_config):
 
         return {
             "new": 0,
-            "skipped": 0,
+            "updated": 0,
+            "unchanged": 0,
+            "old": 0,
             "failed": 1,
         }
 
@@ -111,33 +125,70 @@ def collect_source(source_config):
     )
 
     new_count = 0
-    skipped_count = 0
+    updated_count = 0
+    unchanged_count = 0
+    old_count = 0
     failed_count = 0
 
     for item in discovered:
 
         url = item["url"]
-        title = item["title"]
-
-        if article_exists(url):
-
-            print(
-                f"SKIP: {title}"
-            )
-
-            skipped_count += 1
-
-            continue
-
-        print(
-            f"NEW: {title}"
+        listing_title = (
+            item.get("title") or url
         )
 
-        try:
+        article_info = (
+            get_article_info_by_url(url)
+        )
 
+        existing_article_id = None
+
+        # -------------------------------------------------
+        # EXISTING ARTICLE
+        # -------------------------------------------------
+
+        if article_info is not None:
+
+            (
+                existing_article_id,
+                first_scraped_at,
+            ) = article_info
+
+            # Ensure timestamp is timezone-aware.
+            if first_scraped_at.tzinfo is None:
+                first_scraped_at = (
+                    first_scraped_at.replace(
+                        tzinfo=timezone.utc
+                    )
+                )
+
+            article_age = (
+                datetime.now(timezone.utc)
+                - first_scraped_at
+            )
+
+            # Stop checking revisions after 24 hours.
+            if article_age >= REVISION_WINDOW:
+
+                print(
+                    f"OLD: {listing_title}"
+                )
+
+                old_count += 1
+                continue
+
+        # -------------------------------------------------
+        # EXTRACT ARTICLE
+        # -------------------------------------------------
+
+        try:
             raw = extract_article(url)
 
             if raw is None:
+
+                print(
+                    f"FAILED: {listing_title}"
+                )
 
                 print(
                     f"  Extraction failed: {url}"
@@ -155,26 +206,79 @@ def collect_source(source_config):
             if not normalized["body"]:
 
                 print(
+                    f"FAILED: {listing_title}"
+                )
+
+                print(
                     f"  Empty body: {url}"
                 )
 
                 failed_count += 1
                 continue
 
-            article_id = save_article(
-                normalized
-            )
+            # -------------------------------------------------
+            # NEW ARTICLE
+            # -------------------------------------------------
 
-            print(
-                f"  Saved as article ID {article_id}"
-            )
+            if article_info is None:
 
-            new_count += 1
+                article_id = create_article(
+                    normalized
+                )
+
+                print(
+                    f"NEW: "
+                    f"{normalized['title']}"
+                )
+
+                print(
+                    f"  Saved as article ID "
+                    f"{article_id}"
+                )
+
+                new_count += 1
+
+            # -------------------------------------------------
+            # EXISTING ARTICLE WITHIN 24 HOURS
+            # -------------------------------------------------
+
+            else:
+
+                changed = (
+                    update_article_if_changed(
+                        article_id=existing_article_id,
+                        article_data=normalized,
+                    )
+                )
+
+                if changed:
+
+                    print(
+                        f"UPDATED: "
+                        f"{normalized['title']}"
+                    )
+
+                    print(
+                        f"  New revision created "
+                        f"for article ID "
+                        f"{existing_article_id}"
+                    )
+
+                    updated_count += 1
+
+                else:
+
+                    print(
+                        f"UNCHANGED: "
+                        f"{normalized['title']}"
+                    )
+
+                    unchanged_count += 1
 
         except Exception as exc:
 
             print(
-                f"  ERROR: {url}"
+                f"ERROR: {url}"
             )
 
             print(
@@ -185,7 +289,9 @@ def collect_source(source_config):
 
     return {
         "new": new_count,
-        "skipped": skipped_count,
+        "updated": updated_count,
+        "unchanged": unchanged_count,
+        "old": old_count,
         "failed": failed_count,
     }
 
@@ -193,7 +299,9 @@ def collect_source(source_config):
 def main():
 
     total_new = 0
-    total_skipped = 0
+    total_updated = 0
+    total_unchanged = 0
+    total_old = 0
     total_failed = 0
 
     for source_config in SOURCES:
@@ -203,7 +311,9 @@ def main():
         )
 
         total_new += result["new"]
-        total_skipped += result["skipped"]
+        total_updated += result["updated"]
+        total_unchanged += result["unchanged"]
+        total_old += result["old"]
         total_failed += result["failed"]
 
     print("\n" + "=" * 70)
@@ -211,15 +321,23 @@ def main():
     print("=" * 70)
 
     print(
-        f"New articles:     {total_new}"
+        f"New articles:        {total_new}"
     )
 
     print(
-        f"Already existed:  {total_skipped}"
+        f"Updated articles:    {total_updated}"
     )
 
     print(
-        f"Failed:           {total_failed}"
+        f"Unchanged (<24h):    {total_unchanged}"
+    )
+
+    print(
+        f"Older than 24h:      {total_old}"
+    )
+
+    print(
+        f"Failed:              {total_failed}"
     )
 
 
