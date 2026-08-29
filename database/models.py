@@ -109,6 +109,17 @@ class Article(Base):
         nullable=False,
     )
 
+    canonical_url: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        index=True,
+    )
+
+    category: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
 class ArticleRevision(Base):
     __tablename__ = "article_revisions"
 
@@ -179,4 +190,4 @@ class ArticleRevision(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
-    )
+    )   
