@@ -12,7 +12,10 @@ from collectors.cincodias import discover_articles as discover_cincodias
 from collectors.telefuturo import discover_articles as discover_telefuturo
 
 from extraction.article import extract_article
-from extraction.normalize import normalize_article
+from extraction.normalize import (
+    normalize_article,
+    normalize_url,
+)
 
 from database.repository import (
     create_article,
@@ -132,7 +135,18 @@ def collect_source(source_config):
 
     for item in discovered:
 
-        url = item["url"]
+        url = normalize_url(
+            item["url"]
+        )
+
+        if url is None:
+            print(
+                "FAILED: invalid URL"
+           )
+
+            failed_count += 1
+            continue
+
         listing_title = (
             item.get("title") or url
         )
