@@ -10,6 +10,17 @@ from collectors.ip import discover_articles as discover_ip
 from collectors.monumental import discover_articles as discover_monumental
 from collectors.cincodias import discover_articles as discover_cincodias
 from collectors.telefuturo import discover_articles as discover_telefuturo
+from collectors.elindependiente import discover_articles as discover_elindependiente
+from collectors.rdn import discover_articles as discover_rdn
+from collectors.adn import discover_articles as discover_adn
+from collectors.latribuna import discover_articles as discover_latribuna
+from collectors.megacadena import discover_articles as discover_megacadena
+from collectors.popular import discover_articles as discover_popular
+from collectors.lajornada import discover_articles as discover_lajornada
+from collectors.dpn import discover_articles as discover_dpn
+from collectors.extra import discover_articles as discover_extra
+from collectors.cronica import discover_articles as discover_cronica
+
 
 from extraction.article import extract_article
 from extraction.normalize import (
@@ -79,6 +90,56 @@ SOURCES = [
         "domain": "telefuturo.com.py",
         "collector": discover_telefuturo,
     },
+    {
+        "name": "El Independiente",
+        "domain": "independiente.com.py",
+        "collector": discover_elindependiente,
+    },
+    {
+        "name": "Resumen de Noticias",
+        "domain": "rdn.com.py",
+        "collector": discover_rdn,
+    },
+    {
+        "name": "adn",
+        "domain": "adn.com.py",
+        "collector": discover_adn,
+    },
+    {
+        "name": "La Tribuna",
+        "domain": "latribuna.com.py",
+        "collector": discover_latribuna,
+    },
+    {
+        "name": "Megacadena",
+        "domain": "megacadena.com.py",
+        "collector": discover_megacadena,
+    },
+    {
+        "name": "Popular",
+        "domain": "popular.com.py",
+        "collector": discover_popular,
+    },
+    {
+        "name": "La Jornada",
+        "domain": "lajornada.com.py",
+        "collector": discover_lajornada,
+    },
+    {
+        "name": "Diario Paraguayo Noticias",
+        "domain": "dpn.com.py",
+        "collector": discover_dpn,
+    },
+    {
+        "name": "Extra",
+        "domain": "extra.com.py",
+        "collector": discover_extra,
+    },
+    {
+        "name": "Crónica",
+        "domain": "cronica.com.py",
+        "collector": discover_cronica,
+    }
 ]
 
 

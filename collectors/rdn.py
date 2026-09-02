@@ -1,10 +1,11 @@
-import requests
 import re
+import requests
+
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 
 
-BASE_URL = "https://independiente.com.py"
+BASE_URL = "https://www.rdn.com.py"
 
 HEADERS = {
     "User-Agent": (
@@ -13,30 +14,6 @@ HEADERS = {
         "(KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
     )
-}
-
-
-# Pages that are part of the website structure,
-# but are not individual news articles.
-EXCLUDED_PREFIXES = (
-    "/category/",
-    "/author/",
-    "/tag/",
-    "/page/",
-    "/wp-content/",
-    "/wp-admin/",
-    "/wp-json/",
-)
-
-EXCLUDED_PATHS = {
-    "/",
-    "/blog/",
-    "/politica/",
-    "/economia/",
-    "/actualidad/",
-    "/educacion/",
-    "/internacionales/",
-    "/opinion/",
 }
 
 
@@ -56,15 +33,23 @@ def clean_url(url: str) -> str:
 
 def is_article_url(url: str) -> bool:
     """
-    Decide whether a URL looks like an El Independiente article.
+    Decide whether a URL looks like an RDN article.
+
+    Current RDN article URLs follow:
+
+        /YYYY/MM/DD/article-slug/
+
+    Example:
+
+        /2026/09/01/
+        vecinos-denuncian-riesgo-de-desborde-cloacal-en-asuncion/
     """
 
     parsed = urlparse(url)
 
-    # Keep only El Independiente URLs.
     if parsed.netloc not in {
-        "independiente.com.py",
-        "www.independiente.com.py",
+        "rdn.com.py",
+        "www.rdn.com.py",
     }:
         return False
 
@@ -73,20 +58,62 @@ def is_article_url(url: str) -> bool:
     if not path:
         return False
 
-    # Exclude known non-article pages.
-    if path in EXCLUDED_PATHS:
+    # Split URL into path components.
+    parts = [
+        part
+        for part in path.split("/")
+        if part
+    ]
+
+    # Expected:
+    #
+    # year / month / day / slug
+    #
+    if len(parts) != 4:
         return False
 
-    # Exclude WordPress categories, authors, tags,
-    # pagination and system paths.
-    if any(
-        path.startswith(prefix)
-        for prefix in EXCLUDED_PREFIXES
+    year, month, day, slug = parts
+
+    # Year
+    if not re.fullmatch(
+        r"\d{4}",
+        year,
     ):
         return False
 
-    # Ignore files and WordPress assets.
-    if path.endswith(
+    # Month
+    if not re.fullmatch(
+        r"\d{1,2}",
+        month,
+    ):
+        return False
+
+    # Day
+    if not re.fullmatch(
+        r"\d{1,2}",
+        day,
+    ):
+        return False
+
+    # Basic numeric validation.
+    try:
+        month_number = int(month)
+        day_number = int(day)
+    except ValueError:
+        return False
+
+    if not 1 <= month_number <= 12:
+        return False
+
+    if not 1 <= day_number <= 31:
+        return False
+
+    # Article needs an actual slug.
+    if not slug:
+        return False
+
+    # Ignore files/assets.
+    if slug.endswith(
         (
             ".jpg",
             ".jpeg",
@@ -102,40 +129,12 @@ def is_article_url(url: str) -> bool:
     ):
         return False
 
-    # Individual articles currently use a single
-    # root-level slug:
-    #
-    # /ministerio-de-educacion-detecta-250-titulos-docentes-falsos-y-casos-avanzan-hacia-juicio/
-    parts = [
-        part
-        for part in path.split("/")
-        if part
-    ]
-
-    if len(parts) != 1:
-        return False
-
-    slug = parts[0]
-
-    # Exclude date-only pages such as:
-    #
-    # /31-08-2026/
-    # /14-08-26/
-    # /13-08-26/
-    # /12-08-26/
-    if re.fullmatch(
-        r"\d{1,2}-\d{1,2}-(?:\d{2}|\d{4})",
-        slug,
-    ):
-        return False
-
     return True
 
 
 def discover_articles():
     """
-    Discover current articles from the homepage of
-    El Independiente.
+    Discover current RDN articles from the homepage.
 
     Returns:
         list[dict]
@@ -156,8 +155,6 @@ def discover_articles():
 
     articles = {}
 
-    # El Independiente is a WordPress site and exposes
-    # its article links directly in the HTML.
     for link in soup.find_all(
         "a",
         href=True,
@@ -187,20 +184,20 @@ def discover_articles():
             strip=True,
         )
 
-        # Many WordPress pages contain repeated links
-        # to the same article (image + title + sidebar).
-        # Dictionary key removes duplicates.
+        # Avoid duplicate article links.
+        # Homepage cards often link the image,
+        # title and other elements separately.
         if full_url not in articles:
 
             articles[full_url] = {
-                "source": "El Independiente",
+                "source": "RDN",
                 "title": title or None,
                 "url": full_url,
                 "section": "general",
             }
 
-        # Prefer a non-empty title if an earlier occurrence
-        # of the same URL came from an image link.
+        # Prefer a useful title if the first link
+        # found was an image or empty link.
         elif (
             not articles[full_url]["title"]
             and title

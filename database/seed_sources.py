@@ -42,6 +42,46 @@ SOURCES = [
     {
         "name": "Telefuturo",
         "domain": "telefuturo.com.py",
+    },
+    {
+        "name": "El Independiente",
+        "domain": "independiente.com.py",
+    },
+    {
+        "name": "Resumen de Noticias",
+        "domain": "rdn.com.py",
+    },
+    {
+        "name": "adn",
+        "domain": "adn.com.py",
+    },
+    {
+        "name": "La Tribuna",
+        "domain": "latribuna.com.py",
+    },
+    {
+        "name": "Megacadena",
+        "domain": "megacadena.com.py",
+    },
+    {
+        "name": "Popular",
+        "domain": "popular.com.py",
+    },
+    {
+        "name": "La Jornada",
+        "domain": "lajornada.com.py",
+    },
+    {
+        "name": "Diario Paraguayo Noticias",
+        "domain": "dpn.com.py",
+    },
+    {
+        "name": "Extra",
+        "domain": "extra.com.py",
+    },
+    {
+        "name": "Crónica",
+        "domain": "cronica.com.py",
     }
 ]
 

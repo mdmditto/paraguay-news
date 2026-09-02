@@ -74,6 +74,60 @@ SOURCE_METADATA = {
         "language": "es",
         "country": "PY",
     },
+    "independiente.com.py": {
+        "source_type": "newspaper",
+        "institutional_class": "private",
+        "language": "es",
+        "country": "PY",
+    },
+    "rdn.com.py": {
+        "source_type": "newspaper",
+        "institutional_class": "private",
+        "language": "es",
+        "country": "PY",
+    },
+    "adn.com.py": {
+        "source_type": "newspaper",
+        "institutional_class": "private",
+        "language": "es",
+        "country": "PY",
+    },
+    "latribuna.com.py": {
+        "source_type": "newspaper",
+        "institutional_class": "private",
+        "language": "es",
+        "country": "PY",
+    },
+    "megacadena.com.py": {
+        "source_type": "radio",
+        "institutional_class": "private",
+        "language": "es",
+        "country": "PY",
+    },
+    "popular.com.py": {
+        "source_type": "newspaper",
+        "institutional_class": "private",
+        "language": "es",
+        "country": "PY",
+    },
+    "lajornada.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "dpn.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "extra.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
 }
 
 

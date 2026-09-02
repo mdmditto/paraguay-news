@@ -1,10 +1,11 @@
-import requests
 import re
+import requests
+
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 
 
-BASE_URL = "https://independiente.com.py"
+BASE_URL = "https://www.adndigital.com.py"
 
 HEADERS = {
     "User-Agent": (
@@ -12,12 +13,16 @@ HEADERS = {
         "AppleWebKit/537.36 "
         "(KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
-    )
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,"
+        "application/xml;q=0.9,image/avif,"
+        "image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
 }
 
 
-# Pages that are part of the website structure,
-# but are not individual news articles.
 EXCLUDED_PREFIXES = (
     "/category/",
     "/author/",
@@ -26,17 +31,11 @@ EXCLUDED_PREFIXES = (
     "/wp-content/",
     "/wp-admin/",
     "/wp-json/",
+    "/feed/",
 )
 
 EXCLUDED_PATHS = {
     "/",
-    "/blog/",
-    "/politica/",
-    "/economia/",
-    "/actualidad/",
-    "/educacion/",
-    "/internacionales/",
-    "/opinion/",
 }
 
 
@@ -56,15 +55,18 @@ def clean_url(url: str) -> str:
 
 def is_article_url(url: str) -> bool:
     """
-    Decide whether a URL looks like an El Independiente article.
+    Decide whether a URL looks like an ADN Digital article.
+
+    Current ADN Digital articles use root-level slugs:
+
+        /orue-propone-debatir-ajustes-a-regimenes-especiales-sin-aumentar-impuestos/
     """
 
     parsed = urlparse(url)
 
-    # Keep only El Independiente URLs.
     if parsed.netloc not in {
-        "independiente.com.py",
-        "www.independiente.com.py",
+        "adndigital.com.py",
+        "www.adndigital.com.py",
     }:
         return False
 
@@ -73,20 +75,17 @@ def is_article_url(url: str) -> bool:
     if not path:
         return False
 
-    # Exclude known non-article pages.
     if path in EXCLUDED_PATHS:
         return False
 
-    # Exclude WordPress categories, authors, tags,
-    # pagination and system paths.
     if any(
         path.startswith(prefix)
         for prefix in EXCLUDED_PREFIXES
     ):
         return False
 
-    # Ignore files and WordPress assets.
-    if path.endswith(
+    # Ignore files and assets.
+    if path.lower().endswith(
         (
             ".jpg",
             ".jpeg",
@@ -98,35 +97,39 @@ def is_article_url(url: str) -> bool:
             ".xml",
             ".css",
             ".js",
+            ".ico",
         )
     ):
         return False
 
-    # Individual articles currently use a single
-    # root-level slug:
-    #
-    # /ministerio-de-educacion-detecta-250-titulos-docentes-falsos-y-casos-avanzan-hacia-juicio/
     parts = [
         part
         for part in path.split("/")
         if part
     ]
 
+    # Current articles are root-level URLs:
+    #
+    # /article-slug/
     if len(parts) != 1:
         return False
 
     slug = parts[0]
 
-    # Exclude date-only pages such as:
-    #
-    # /31-08-2026/
-    # /14-08-26/
-    # /13-08-26/
-    # /12-08-26/
+    # Reject numeric/archive-like pages.
+    if slug.isdigit():
+        return False
+
+    # Reject date-only slugs if the site exposes any.
     if re.fullmatch(
         r"\d{1,2}-\d{1,2}-(?:\d{2}|\d{4})",
         slug,
     ):
+        return False
+
+    # Real article slugs should normally contain
+    # at least one hyphen.
+    if "-" not in slug:
         return False
 
     return True
@@ -134,16 +137,20 @@ def is_article_url(url: str) -> bool:
 
 def discover_articles():
     """
-    Discover current articles from the homepage of
-    El Independiente.
+    Discover current ADN Digital articles.
 
     Returns:
         list[dict]
     """
 
-    response = requests.get(
+    session = requests.Session()
+
+    session.headers.update(
+        HEADERS
+    )
+
+    response = session.get(
         BASE_URL,
-        headers=HEADERS,
         timeout=20,
     )
 
@@ -156,8 +163,6 @@ def discover_articles():
 
     articles = {}
 
-    # El Independiente is a WordPress site and exposes
-    # its article links directly in the HTML.
     for link in soup.find_all(
         "a",
         href=True,
@@ -187,20 +192,18 @@ def discover_articles():
             strip=True,
         )
 
-        # Many WordPress pages contain repeated links
-        # to the same article (image + title + sidebar).
-        # Dictionary key removes duplicates.
         if full_url not in articles:
 
             articles[full_url] = {
-                "source": "El Independiente",
+                "source": "ADN Digital",
                 "title": title or None,
                 "url": full_url,
                 "section": "general",
             }
 
-        # Prefer a non-empty title if an earlier occurrence
-        # of the same URL came from an image link.
+        # The first occurrence can be an image link,
+        # so replace an empty title if we later find
+        # the text link for the same article.
         elif (
             not articles[full_url]["title"]
             and title

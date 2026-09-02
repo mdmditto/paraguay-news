@@ -1,10 +1,11 @@
-import requests
 import re
+import requests
+
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 
 
-BASE_URL = "https://independiente.com.py"
+BASE_URL = "https://www.latribuna.com.py"
 
 HEADERS = {
     "User-Agent": (
@@ -12,31 +13,13 @@ HEADERS = {
         "AppleWebKit/537.36 "
         "(KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
-    )
-}
-
-
-# Pages that are part of the website structure,
-# but are not individual news articles.
-EXCLUDED_PREFIXES = (
-    "/category/",
-    "/author/",
-    "/tag/",
-    "/page/",
-    "/wp-content/",
-    "/wp-admin/",
-    "/wp-json/",
-)
-
-EXCLUDED_PATHS = {
-    "/",
-    "/blog/",
-    "/politica/",
-    "/economia/",
-    "/actualidad/",
-    "/educacion/",
-    "/internacionales/",
-    "/opinion/",
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,"
+        "application/xml;q=0.9,image/avif,"
+        "image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
 }
 
 
@@ -56,15 +39,23 @@ def clean_url(url: str) -> str:
 
 def is_article_url(url: str) -> bool:
     """
-    Decide whether a URL looks like an El Independiente article.
+    Decide whether a URL looks like a La Tribuna article.
+
+    Current article URLs follow:
+
+        /section/YYYY/MM/DD/article-slug/
+
+    Example:
+
+        /editorial/2026/08/29/
+        la-marca-pais-o-el-giro-sobre-lo-mismo/
     """
 
     parsed = urlparse(url)
 
-    # Keep only El Independiente URLs.
     if parsed.netloc not in {
-        "independiente.com.py",
-        "www.independiente.com.py",
+        "latribuna.com.py",
+        "www.latribuna.com.py",
     }:
         return False
 
@@ -73,20 +64,62 @@ def is_article_url(url: str) -> bool:
     if not path:
         return False
 
-    # Exclude known non-article pages.
-    if path in EXCLUDED_PATHS:
+    parts = [
+        part
+        for part in path.split("/")
+        if part
+    ]
+
+    # Expected structure:
+    #
+    # section / year / month / day / slug
+    if len(parts) != 5:
         return False
 
-    # Exclude WordPress categories, authors, tags,
-    # pagination and system paths.
-    if any(
-        path.startswith(prefix)
-        for prefix in EXCLUDED_PREFIXES
+    section, year, month, day, slug = parts
+
+    # Section must contain something.
+    if not section:
+        return False
+
+    # Validate date structure.
+    if not re.fullmatch(
+        r"\d{4}",
+        year,
     ):
         return False
 
-    # Ignore files and WordPress assets.
-    if path.endswith(
+    if not re.fullmatch(
+        r"\d{1,2}",
+        month,
+    ):
+        return False
+
+    if not re.fullmatch(
+        r"\d{1,2}",
+        day,
+    ):
+        return False
+
+    try:
+        month_number = int(month)
+        day_number = int(day)
+
+    except ValueError:
+        return False
+
+    if not 1 <= month_number <= 12:
+        return False
+
+    if not 1 <= day_number <= 31:
+        return False
+
+    # Need a real article slug.
+    if not slug:
+        return False
+
+    # Avoid file URLs.
+    if slug.lower().endswith(
         (
             ".jpg",
             ".jpeg",
@@ -102,40 +135,12 @@ def is_article_url(url: str) -> bool:
     ):
         return False
 
-    # Individual articles currently use a single
-    # root-level slug:
-    #
-    # /ministerio-de-educacion-detecta-250-titulos-docentes-falsos-y-casos-avanzan-hacia-juicio/
-    parts = [
-        part
-        for part in path.split("/")
-        if part
-    ]
-
-    if len(parts) != 1:
-        return False
-
-    slug = parts[0]
-
-    # Exclude date-only pages such as:
-    #
-    # /31-08-2026/
-    # /14-08-26/
-    # /13-08-26/
-    # /12-08-26/
-    if re.fullmatch(
-        r"\d{1,2}-\d{1,2}-(?:\d{2}|\d{4})",
-        slug,
-    ):
-        return False
-
     return True
 
 
 def discover_articles():
     """
-    Discover current articles from the homepage of
-    El Independiente.
+    Discover current La Tribuna articles from the homepage.
 
     Returns:
         list[dict]
@@ -156,8 +161,6 @@ def discover_articles():
 
     articles = {}
 
-    # El Independiente is a WordPress site and exposes
-    # its article links directly in the HTML.
     for link in soup.find_all(
         "a",
         href=True,
@@ -187,20 +190,36 @@ def discover_articles():
             strip=True,
         )
 
-        # Many WordPress pages contain repeated links
-        # to the same article (image + title + sidebar).
-        # Dictionary key removes duplicates.
+        # Extract section directly from URL.
+        parsed = urlparse(
+            full_url
+        )
+
+        parts = [
+            part
+            for part in parsed.path.split("/")
+            if part
+        ]
+
+        section = (
+            parts[0]
+            if parts
+            else "general"
+        )
+
+        # Homepage often links the same article
+        # through image, title and other components.
         if full_url not in articles:
 
             articles[full_url] = {
-                "source": "El Independiente",
+                "source": "La Tribuna",
                 "title": title or None,
                 "url": full_url,
-                "section": "general",
+                "section": section,
             }
 
-        # Prefer a non-empty title if an earlier occurrence
-        # of the same URL came from an image link.
+        # Prefer a non-empty title when the first
+        # occurrence was an image link.
         elif (
             not articles[full_url]["title"]
             and title
@@ -223,6 +242,13 @@ if __name__ == "__main__":
 
     for article in articles:
 
-        print(article["title"])
-        print(article["url"])
+        print(
+            f"[{article['section']}] "
+            f"{article['title']}"
+        )
+
+        print(
+            article["url"]
+        )
+
         print()
