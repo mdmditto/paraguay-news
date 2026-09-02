@@ -128,6 +128,18 @@ SOURCE_METADATA = {
             "language": "es",
             "country": "PY",
     },
+    "cronica.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "elpoder.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    }
 }
 
 
