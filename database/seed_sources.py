@@ -86,6 +86,10 @@ SOURCES = [
     {
         "name": "El Poder",
         "domain": "elpoder.com.py",
+    },
+    {
+        "name": "El Observador",
+        "domain": "elobservador.com.py",
     }
 ]
 

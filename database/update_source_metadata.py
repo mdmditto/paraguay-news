@@ -139,7 +139,13 @@ SOURCE_METADATA = {
             "institutional_class": "private",
             "language": "es",
             "country": "PY",
-    }
+    },
+    "elobservador.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
 }
 
 
