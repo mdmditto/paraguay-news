@@ -146,6 +146,13 @@ SOURCE_METADATA = {
             "language": "es",
             "country": "PY",
     },
+    "laclave.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    
 }
 
 

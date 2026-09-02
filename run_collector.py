@@ -22,6 +22,7 @@ from collectors.extra import discover_articles as discover_extra
 from collectors.cronica import discover_articles as discover_cronica
 from collectors.elpoder import discover_articles as discover_elpoder
 from collectors.elobservador import discover_articles as discover_elobservador
+from collectors.laclave import discover_articles as discover_laclave
 
 
 from extraction.article import extract_article
@@ -151,6 +152,11 @@ SOURCES = [
         "name": "El Observador",
         "domain": "elobservador.com.py",
         "collector": discover_elobservador,
+    },
+    {
+        "name": "La Clave",
+        "domain": "laclave.com.py",
+        "collector": discover_laclave,
     }
 ]
 
