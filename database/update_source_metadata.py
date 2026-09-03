@@ -152,7 +152,127 @@ SOURCE_METADATA = {
             "language": "es",
             "country": "PY",
     },
-    
+    "cdehot.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "ahoracde.com": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "tnpress.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "noticiascde.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "diarioprimeraplana.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "amambaydigital.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "pedrojuandigital.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "amambaynews.com": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "amambayahora.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "oviedopress.com": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "caazapaahora.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "luquenoticias.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "sanlorenzopy.com": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "sanlorenzohoy.com": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "qapchaconews.com": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "concepcionaldia.com": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "itapuanoticias.tv": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "masencarnacion.com": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "digitalmisiones.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    },
+    "reddigitalsanpedro.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    }
+
 }
 
 

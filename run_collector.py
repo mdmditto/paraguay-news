@@ -23,6 +23,26 @@ from collectors.cronica import discover_articles as discover_cronica
 from collectors.elpoder import discover_articles as discover_elpoder
 from collectors.elobservador import discover_articles as discover_elobservador
 from collectors.laclave import discover_articles as discover_laclave
+from collectors.cdehot import discover_articles as discover_cdehot
+from collectors.ahoracde import discover_articles as discover_ahoracde
+from collectors.tnpress import discover_articles as discover_tnpress
+from collectors.noticiascde import discover_articles as discover_noticiascde
+from collectors.primeraplana import discover_articles as discover_diarioprimeraplana
+from collectors.amambaydigital import discover_articles as discover_amambaydigital
+from collectors.pedrojuandigital import discover_articles as discover_pedrojuandigital
+from collectors.amambaynews import discover_articles as discover_amambaynews
+from collectors.amambayahora import discover_articles as discover_amambayahora
+from collectors.oviedopress import discover_articles as discover_oviedopress
+from collectors.caazapaahora import discover_articles as discover_caazapaahora
+from collectors.luquenoticias import discover_articles as discover_luquenoticias
+from collectors.sanlorenzopy import discover_articles as discover_sanlorenzopy
+from collectors.sanlorenzohoy import discover_articles as discover_sanlorenzohoy
+from collectors.qap import discover_articles as discover_qapchaconews
+from collectors.concepcionaldia import discover_articles as discover_concepcionaldia
+from collectors.itapuanoticias import discover_articles as discover_itapuanoticias
+from collectors.masencarnacion import discover_articles as discover_masencarnacion
+from collectors.digitalmisiones import discover_articles as discover_digitalmisiones
+from collectors.reddigitalsanpedro import discover_articles as discover_reddigitalsanpedro
 
 
 from extraction.article import extract_article
@@ -157,7 +177,108 @@ SOURCES = [
         "name": "La Clave",
         "domain": "laclave.com.py",
         "collector": discover_laclave,
-    }
+    },
+    {
+        "name": "CDE Hot",
+        "domain": "cdehot.com.py",
+        "collector": discover_cdehot,
+    },
+    {
+        "name": "Ahora CDE",
+        "domain": "ahoracde.com",
+        "collector": discover_ahoracde,
+    },
+    {
+        "name": "TN Press",
+        "domain": "tnpress.com.py",
+        "collector": discover_tnpress,
+    },
+    {
+        "name": "Noticias CDE",
+        "domain": "noticiascde.com.py",
+        "collector": discover_noticiascde,
+    },
+    {
+        "name": "Primera Plana",
+        "domain": "diarioprimeraplana.com.py",
+        "collector": discover_diarioprimeraplana,
+    },
+    {
+        "name": "Amambay Digital",
+        "domain": "amambaydigital.com.py",
+        "collector": discover_amambaydigital,
+    },
+    {
+        "name": "Pedro Juan Digital",
+        "domain": "pedrojuandigital.com.py",
+        "collector": discover_pedrojuandigital,
+    },
+    {
+        "name": "Amambay News",
+        "domain": "amambaynews.com",
+        "collector": discover_amambaynews,
+    },
+    {
+        "name": "Amambay Ahora",
+        "domain": "amambayahora.com.py",
+        "collector": discover_amambayahora,
+    },
+    {
+        "name": "Oviedo Press",
+        "domain": "oviedopress.com",
+        "collector": discover_oviedopress,
+    },
+    {
+        "name": "Caazapa Ahora",
+        "domain": "caazapaahora.com.py",
+        "collector": discover_caazapaahora,
+    },
+    {
+        "name": "Luque Noticias",
+        "domain": "luquenoticias.com.py",
+        "collector": discover_luquenoticias,
+    },
+    {
+        "name": "San Lorenzo Py",
+        "domain": "sanlorenzopy.com",
+        "collector": discover_sanlorenzopy,
+    },
+    {
+        "name": "San Lorenzo Hoy",
+        "domain": "sanlorenzohoy.com",
+        "collector": discover_sanlorenzohoy,
+    },
+    {
+        "name": "QAP Chaco News",
+        "domain": "qapchaconews.com",
+        "collector": discover_qapchaconews,
+    },
+    {
+        "name": "Concepción al Día",
+        "domain": "concepcionaldia.com",
+        "collector": discover_concepcionaldia,
+    },
+    {
+        "name": "Itapúa en Noticias",
+        "domain": "itapuanoticias.tv",
+        "collector": discover_itapuanoticias,
+    },
+    {
+        "name": "Más Encarnación",
+        "domain": "masencarnacion.com",
+        "collector": discover_masencarnacion,
+    },
+    {
+        "name": "Digital Misiones",
+        "domain": "digitalmisiones.com.py",
+        "collector": discover_digitalmisiones,
+    },
+    {
+        "name": "Red Digital San Pedro",
+        "domain": "reddigitalsanpedro.com.py",
+        "collector": discover_reddigitalsanpedro,
+    },
+
 ]
 
 

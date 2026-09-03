@@ -94,7 +94,89 @@ SOURCES = [
     {
         "name": "La Clave",
         "domain": "laclave.com.py",
+    },
+    {
+        "name": "CDE Hot",
+        "domain": "cdehot.com.py",
+    },
+    {
+        "name": "Ahora CDE",
+        "domain": "ahoracde.com",
+    },
+    {
+        "name": "TN Press",
+        "domain": "tnpress.com.py",
+    },
+    {
+        "name": "Noticias CDE",
+        "domain": "noticiascde.com.py",
+    },
+    {
+        "name": "Primera Plana",
+        "domain": "diarioprimeraplana.com.py",
+    },
+    {
+        "name": "Amambay Digital",
+        "domain": "amambaydigital.com.py",
+    },
+    {
+        "name": "Pedro Juan Digital",
+        "domain": "pedrojuandigital.com.py",
+    },
+    {
+        "name": "Amambay News",
+        "domain": "amambaynews.com",
+    },
+    {
+        "name": "Amambay Ahora",
+        "domain": "amambayahora.com.py",
+    },
+    {
+        "name": "Oviedo Press",
+        "domain": "oviedopress.com",
+    },
+    {
+        "name": "Caazapa Ahora",
+        "domain": "caazapaahora.com.py",
+    },
+    {
+        "name": "Luque Noticias",
+        "domain": "luquenoticias.com.py",
+    },
+    {
+        "name": "San Lorenzo Py",
+        "domain": "sanlorenzopy.com",
+    },
+    {
+        "name": "San Lorenzo Hoy",
+        "domain": "sanlorenzohoy.com",
+    },
+    {
+        "name": "QAP Chaco News",
+        "domain": "qapchaconews.com",
+    },
+    {
+        "name": "Concepción al Día",
+        "domain": "concepcionaldia.com",
+    },
+    {
+        "name": "Itapúa en Noticias",
+        "domain": "itapuanoticias.tv",
+    },
+    {
+        "name": "Más Encarnación",
+        "domain": "masencarnacion.com",
+    },
+    {
+        "name": "Digital Misiones",
+        "domain": "digitalmisiones.com.py",
+    },
+    {
+        "name": "Red Digital San Pedro",
+        "domain": "reddigitalsanpedro.com.py",
     }
+
+
 ]
 
 
