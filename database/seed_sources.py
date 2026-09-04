@@ -174,6 +174,10 @@ SOURCES = [
     {
         "name": "Red Digital San Pedro",
         "domain": "reddigitalsanpedro.com.py",
+    },
+    {
+        "name": "The Asuncion Times",
+        "domain": "theasunciontimes.com.py",
     }
 
 

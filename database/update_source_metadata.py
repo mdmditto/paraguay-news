@@ -271,7 +271,13 @@ SOURCE_METADATA = {
             "institutional_class": "private",
             "language": "es",
             "country": "PY",
-    }
+    },
+    "theasunciontimes.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "en",
+            "country": "PY",
+    },
 
 }
 

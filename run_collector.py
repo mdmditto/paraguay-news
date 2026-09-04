@@ -43,6 +43,7 @@ from collectors.itapuanoticias import discover_articles as discover_itapuanotici
 from collectors.masencarnacion import discover_articles as discover_masencarnacion
 from collectors.digitalmisiones import discover_articles as discover_digitalmisiones
 from collectors.reddigitalsanpedro import discover_articles as discover_reddigitalsanpedro
+from collectors.asunciontimes import discover_articles as discover_theasunciontimes
 
 
 from extraction.article import extract_article
@@ -277,6 +278,11 @@ SOURCES = [
         "name": "Red Digital San Pedro",
         "domain": "reddigitalsanpedro.com.py",
         "collector": discover_reddigitalsanpedro,
+    },
+    {
+        "name": "The Asuncion Times",
+        "domain": "theasunciontimes.com.py",
+        "collector": discover_theasunciontimes,
     },
 
 ]
