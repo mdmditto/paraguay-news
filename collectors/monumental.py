@@ -5,7 +5,11 @@ from urllib.parse import urljoin, urlparse
 
 
 BASE_URL = "https://www.monumental.com.py"
-POLITICS_URL = f"{BASE_URL}/noticias/politica"
+
+DISCOVERY_URLS = [
+    f"{BASE_URL}/noticias",
+]
+
 
 HEADERS = {
     "User-Agent": (
@@ -17,17 +21,138 @@ HEADERS = {
 }
 
 
-def discover_articles():
-    """
-    Discover articles listed on Monumental's
-    politics page.
+# Known paths under /noticias/ that are NOT individual articles.
+EXCLUDED_PATHS = {
+    "noticias",
+    "buscar",
+    "search",
+    "contacto",
+    "nosotros",
+}
 
-    Returns:
-        list[dict]
+
+def clean_url(url):
+    """
+    Remove query parameters and fragments and
+    normalize the trailing slash.
+    """
+
+    parsed = urlparse(url)
+
+    return parsed._replace(
+        query="",
+        fragment="",
+    ).geturl().rstrip("/")
+
+
+def is_article_url(url):
+    """
+    Determine whether a URL looks like a Monumental
+    article.
+
+    Current article structure:
+
+        /noticias/<section>/<slug>
+
+    Some sections have a second-level subsection:
+
+        /noticias/futbol-a-lo-grande/copa-mundial-2026/<slug>
+
+    Therefore we identify articles based on the
+    /noticias/ prefix and the final path component,
+    rather than requiring a fixed number of path parts.
+    """
+
+    parsed = urlparse(url)
+
+    # Only Monumental
+    if parsed.netloc not in {
+        "www.monumental.com.py",
+        "monumental.com.py",
+    }:
+        return False
+
+    parts = [
+        part
+        for part in parsed.path.split("/")
+        if part
+    ]
+
+    # Must start with /noticias/
+    if not parts:
+        return False
+
+    if parts[0].lower() != "noticias":
+        return False
+
+    # /noticias/ itself is the news landing page
+    if len(parts) < 3:
+        return False
+
+    # Last component should be the article slug
+    slug = parts[-1].lower()
+
+    # Known non-article paths
+    if slug in EXCLUDED_PATHS:
+        return False
+
+    # Ignore files
+    if "." in slug:
+        return False
+
+    # Ignore numeric-only URLs
+    if slug.isdigit():
+        return False
+
+    # Article slugs should be descriptive
+    if len(slug) < 10:
+        return False
+
+    # Monumental article slugs generally contain
+    # multiple words separated by hyphens.
+    if "-" not in slug:
+        return False
+
+    return True
+
+
+def get_section_from_url(url):
+    """
+    Extract the first section after /noticias/.
+
+    Examples:
+
+        /noticias/nacionales/article
+            -> nacionales
+
+        /noticias/politica/article
+            -> politica
+
+        /noticias/futbol-a-lo-grande/copa-mundial-2026/article
+            -> futbol-a-lo-grande
+    """
+
+    parsed = urlparse(url)
+
+    parts = [
+        part
+        for part in parsed.path.split("/")
+        if part
+    ]
+
+    if len(parts) < 2:
+        return "general"
+
+    return parts[1].lower()
+
+
+def discover_from_page(page_url):
+    """
+    Discover Monumental articles from one page.
     """
 
     response = requests.get(
-        POLITICS_URL,
+        page_url,
         headers=HEADERS,
         timeout=20,
     )
@@ -56,49 +181,77 @@ def discover_articles():
             href,
         )
 
-        parsed = urlparse(
+        full_url = clean_url(
             full_url
         )
 
-        # Keep only Monumental
-        if parsed.netloc not in {
-            "monumental.com.py",
-            "www.monumental.com.py",
-        }:
-            continue
-
-        # Actual news stories generally live under
-        # /noticias/...
-        if not parsed.path.startswith(
-            "/noticias/"
+        if not is_article_url(
+            full_url
         ):
             continue
 
-        # Ignore politics landing page itself
-        if (
-            parsed.path.rstrip("/")
-            == "/noticias/politica"
-        ):
-            continue
+        section = get_section_from_url(
+            full_url
+        )
 
+        # Anchor text is often useful on Monumental,
+        # but the article detail extractor should be
+        # considered the authoritative source for title.
         title = link.get_text(
             " ",
             strip=True,
         )
 
-        if not title:
-            continue
+        if title:
+            title = title.strip()
 
-        # Ignore small navigation text
-        if len(title) < 15:
-            continue
+        if not title or len(title) < 10:
+            title = None
 
         articles[full_url] = {
             "source": "Monumental",
             "title": title,
             "url": full_url,
-            "section": "politica",
+            "section": section,
         }
+
+    return articles
+
+
+def discover_articles():
+    """
+    Discover all available Monumental articles.
+
+    Returns:
+        list[dict]
+    """
+
+    articles = {}
+
+    for discovery_url in DISCOVERY_URLS:
+
+        try:
+
+            discovered = discover_from_page(
+                discovery_url
+            )
+
+            articles.update(
+                discovered
+            )
+
+            print(
+                f"Monumental: "
+                f"{discovery_url} -> "
+                f"{len(discovered)} articles"
+            )
+
+        except requests.RequestException as exc:
+
+            print(
+                f"Monumental: failed to fetch "
+                f"{discovery_url}: {exc}"
+            )
 
     return list(
         articles.values()
@@ -110,11 +263,18 @@ if __name__ == "__main__":
     articles = discover_articles()
 
     print(
-        f"Found {len(articles)} articles\n"
+        f"\nFound {len(articles)} articles\n"
     )
 
     for article in articles:
 
-        print(article["title"])
-        print(article["url"])
+        print(
+            f"[{article['section']}] "
+            f"{article['title']}"
+        )
+
+        print(
+            article["url"]
+        )
+
         print()
