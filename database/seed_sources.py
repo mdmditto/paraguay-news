@@ -178,7 +178,11 @@ SOURCES = [
     {
         "name": "The Asuncion Times",
         "domain": "theasunciontimes.com.py",
-    }
+    },
+    {
+        "name": "Ñanduti",
+        "domain": "nanduti.com.py",
+    },
 
 
 ]

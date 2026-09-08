@@ -44,6 +44,7 @@ from collectors.masencarnacion import discover_articles as discover_masencarnaci
 from collectors.digitalmisiones import discover_articles as discover_digitalmisiones
 from collectors.reddigitalsanpedro import discover_articles as discover_reddigitalsanpedro
 from collectors.asunciontimes import discover_articles as discover_theasunciontimes
+from collectors.nanduti import discover_articles as discover_nanduti
 
 
 from extraction.article import extract_article
@@ -284,6 +285,11 @@ SOURCES = [
         "domain": "theasunciontimes.com.py",
         "collector": discover_theasunciontimes,
     },
+    {
+        "name": "Nanduti",
+        "domain": "nanduti.com.py",
+        "collector": discover_nanduti,
+    }
 
 ]
 

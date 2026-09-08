@@ -278,6 +278,12 @@ SOURCE_METADATA = {
             "language": "en",
             "country": "PY",
     },
+    "nanduti.com.py": {
+            "source_type": "newspaper",
+            "institutional_class": "private",
+            "language": "es",
+            "country": "PY",
+    }
 
 }
 
