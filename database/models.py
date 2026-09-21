@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     DateTime,
@@ -191,3 +191,55 @@ class ArticleRevision(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )   
+
+class ArticleEmbedding(Base):
+    __tablename__ = "article_embeddings"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "article_id",
+            "model",
+            "task",
+            name="uq_article_embedding_model_task",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+    )
+
+    article_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "articles.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+        index=True,
+    )
+
+    model: Mapped[str] = mapped_column(
+        String(200),
+        nullable=False,
+    )
+
+    task: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+    )
+
+    dimensions: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+
+    embedding: Mapped[list[float]] = mapped_column(
+        Vector(1024),
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
