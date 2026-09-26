@@ -12,7 +12,7 @@ MODEL_NAME = "jinaai/jina-embeddings-v5-text-small"
 TASK = "text-matching"
 DIMENSIONS = 1024
 
-LIMIT = 100
+LIMIT = 900
 BATCH_SIZE = 8
 
 
