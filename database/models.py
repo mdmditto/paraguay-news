@@ -243,3 +243,63 @@ class ArticleEmbedding(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+
+
+class ArticleEntity(Base):
+    __tablename__ = "article_entities"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "article_id",
+            "normalized_text",
+            "entity_type",
+            "model",
+            name="uq_article_entity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+    )
+
+    article_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "articles.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+        index=True,
+    )
+
+    entity_text: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    entity_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        index=True,
+    )
+
+    normalized_text: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        index=True,
+    )
+
+    model: Mapped[str] = mapped_column(
+        String(200),
+        nullable=False,
+    )
+
+    confidence: Mapped[float | None] = mapped_column(
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
