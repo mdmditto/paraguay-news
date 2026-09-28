@@ -11,7 +11,7 @@ from sklearn.metrics import (
     f1_score,
     roc_auc_score,
 )
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -24,12 +24,16 @@ INPUT_FILE = Path(
     "entities/event_candidates_with_entities.csv"
 )
 
+OUTPUT_FILE = Path(
+    "entities/grouped_model_predictions.csv"
+)
+
 N_SPLITS = 5
 RANDOM_STATE = 42
 
 
 # =========================================================
-# MODELS TO TEST
+# FEATURE SETS
 # =========================================================
 
 FEATURE_SETS = {
@@ -58,22 +62,53 @@ FEATURE_SETS = {
         "shared_per",
         "shared_org",
         "shared_loc",
-        "idf_jaccard",
+        "entity_jaccard",
     ],
 }
 
 
 # =========================================================
-# EVALUATION
+# MODEL
+# =========================================================
+
+def create_model():
+
+    return Pipeline(
+        [
+            (
+                "scaler",
+                StandardScaler(),
+            ),
+            (
+                "classifier",
+                LogisticRegression(
+                    max_iter=2000,
+                    class_weight="balanced",
+                    random_state=RANDOM_STATE,
+                ),
+            ),
+        ]
+    )
+
+
+# =========================================================
+# GROUPED CROSS VALIDATION
 # =========================================================
 
 def evaluate_feature_set(
-    X,
-    y,
-    feature_names,
+    df,
+    features,
 ):
 
-    cv = StratifiedKFold(
+    X = df[features]
+    y = df["same_event"]
+
+    # Important:
+    # every pair belonging to the same target article
+    # stays in the same fold.
+    groups = df["target_id"]
+
+    cv = StratifiedGroupKFold(
         n_splits=N_SPLITS,
         shuffle=True,
         random_state=RANDOM_STATE,
@@ -87,22 +122,40 @@ def evaluate_feature_set(
         "auc": [],
     }
 
-    all_probabilities = np.zeros(
-        len(y)
+    probabilities = np.zeros(
+        len(df),
+        dtype=float,
     )
 
-    for train_idx, test_idx in cv.split(
-        X,
-        y,
+    predictions = np.zeros(
+        len(df),
+        dtype=int,
+    )
+
+    fold_numbers = np.zeros(
+        len(df),
+        dtype=int,
+    )
+
+    for fold, (
+        train_idx,
+        test_idx,
+    ) in enumerate(
+        cv.split(
+            X,
+            y,
+            groups=groups,
+        ),
+        start=1,
     ):
 
         X_train = X.iloc[
             train_idx
-        ][feature_names]
+        ]
 
         X_test = X.iloc[
             test_idx
-        ][feature_names]
+        ]
 
         y_train = y.iloc[
             train_idx
@@ -112,47 +165,41 @@ def evaluate_feature_set(
             test_idx
         ]
 
-        model = Pipeline(
-            [
-                (
-                    "scaler",
-                    StandardScaler(),
-                ),
-                (
-                    "classifier",
-                    LogisticRegression(
-                        max_iter=2000,
-                        class_weight="balanced",
-                    ),
-                ),
-            ]
-        )
+        model = create_model()
 
         model.fit(
             X_train,
             y_train,
         )
 
-        probabilities = (
+        fold_probabilities = (
             model.predict_proba(
                 X_test
             )[:, 1]
         )
 
-        predictions = (
-            probabilities >= 0.5
+        fold_predictions = (
+            fold_probabilities >= 0.5
         ).astype(int)
 
-        all_probabilities[
+        probabilities[
             test_idx
-        ] = probabilities
+        ] = fold_probabilities
+
+        predictions[
+            test_idx
+        ] = fold_predictions
+
+        fold_numbers[
+            test_idx
+        ] = fold
 
         metrics[
             "accuracy"
         ].append(
             accuracy_score(
                 y_test,
-                predictions,
+                fold_predictions,
             )
         )
 
@@ -161,7 +208,7 @@ def evaluate_feature_set(
         ].append(
             precision_score(
                 y_test,
-                predictions,
+                fold_predictions,
                 zero_division=0,
             )
         )
@@ -171,7 +218,7 @@ def evaluate_feature_set(
         ].append(
             recall_score(
                 y_test,
-                predictions,
+                fold_predictions,
                 zero_division=0,
             )
         )
@@ -181,25 +228,59 @@ def evaluate_feature_set(
         ].append(
             f1_score(
                 y_test,
-                predictions,
+                fold_predictions,
                 zero_division=0,
             )
         )
 
-        metrics[
-            "auc"
-        ].append(
-            roc_auc_score(
-                y_test,
-                probabilities,
+        # AUC requires both classes in test fold
+        if y_test.nunique() == 2:
+
+            metrics[
+                "auc"
+            ].append(
+                roc_auc_score(
+                    y_test,
+                    fold_probabilities,
+                )
             )
+
+        print(
+            f"  Fold {fold}: "
+            f"train={len(train_idx)}, "
+            f"test={len(test_idx)}, "
+            f"targets={df.iloc[test_idx]['target_id'].nunique()}"
         )
 
-    return {
-        metric: np.mean(values)
-        for metric, values
-        in metrics.items()
-    }, all_probabilities
+    summary = {}
+
+    for metric, values in metrics.items():
+
+        if values:
+
+            summary[metric] = (
+                np.mean(values)
+            )
+
+            summary[
+                f"{metric}_std"
+            ] = (
+                np.std(values)
+            )
+
+        else:
+
+            summary[metric] = np.nan
+            summary[
+                f"{metric}_std"
+            ] = np.nan
+
+    return (
+        summary,
+        probabilities,
+        predictions,
+        fold_numbers,
+    )
 
 
 # =========================================================
@@ -208,9 +289,9 @@ def evaluate_feature_set(
 
 def main():
 
-    print("=" * 72)
-    print("EVENT DETECTION MODEL COMPARISON")
-    print("=" * 72)
+    print("=" * 76)
+    print("GROUPED EVENT-DETECTION EVALUATION")
+    print("=" * 76)
 
     df = pd.read_csv(
         INPUT_FILE,
@@ -221,11 +302,16 @@ def main():
         f"\nPairs: {len(df)}"
     )
 
+    print(
+        "Unique target articles:",
+        df["target_id"].nunique(),
+    )
+
     # -----------------------------------------------------
     # Binary target
     #
-    # 2 = same event     -> 1
-    # 0/1 = not same     -> 0
+    # label 2 = same event
+    # labels 0/1 = not same event
     # -----------------------------------------------------
 
     df["same_event"] = (
@@ -234,6 +320,7 @@ def main():
 
     print()
     print("Binary distribution:")
+
     print(
         df["same_event"]
         .value_counts()
@@ -241,7 +328,7 @@ def main():
     )
 
     # -----------------------------------------------------
-    # Make sure features are numeric
+    # Validate features
     # -----------------------------------------------------
 
     all_features = set()
@@ -251,41 +338,64 @@ def main():
             features
         )
 
-    for column in all_features:
+    required = (
+        all_features
+        | {
+            "target_id",
+            "candidate_id",
+            "event_label",
+        }
+    )
 
-        df[column] = pd.to_numeric(
-            df[column],
+    missing = (
+        required
+        - set(df.columns)
+    )
+
+    if missing:
+
+        raise RuntimeError(
+            "Missing columns: "
+            + ", ".join(
+                sorted(missing)
+            )
+        )
+
+    for feature in all_features:
+
+        df[feature] = pd.to_numeric(
+            df[feature],
             errors="coerce",
         ).fillna(0)
 
     # -----------------------------------------------------
-    # Evaluate
+    # Evaluate models
     # -----------------------------------------------------
 
     results = []
 
-    probability_columns = {}
+    best_predictions = None
 
     for name, features in (
         FEATURE_SETS.items()
     ):
 
         print()
+        print("-" * 76)
         print(
             f"Evaluating: {name}"
         )
+        print("-" * 76)
 
-        metrics, probabilities = (
-            evaluate_feature_set(
-                df,
-                df["same_event"],
-                features,
-            )
+        (
+            metrics,
+            probabilities,
+            predictions,
+            folds,
+        ) = evaluate_feature_set(
+            df,
+            features,
         )
-
-        probability_columns[
-            name
-        ] = probabilities
 
         results.append(
             {
@@ -294,42 +404,8 @@ def main():
             }
         )
 
-    results_df = pd.DataFrame(
-        results
-    )
-
-    # -----------------------------------------------------
-    # Results
-    # -----------------------------------------------------
-
-    print()
-    print("=" * 72)
-    print("CROSS-VALIDATED RESULTS")
-    print("=" * 72)
-
-    print(
-        results_df
-        .sort_values(
-            "f1",
-            ascending=False,
-        )
-        .round(4)
-        .to_string(
-            index=False
-        )
-    )
-
-    # -----------------------------------------------------
-    # Add out-of-fold predictions
-    # -----------------------------------------------------
-
-    for name, probabilities in (
-        probability_columns.items()
-    ):
-
         safe_name = (
-            name
-            .lower()
+            name.lower()
             .replace(" ", "_")
             .replace("+", "plus")
         )
@@ -338,12 +414,124 @@ def main():
             f"prob_{safe_name}"
         ] = probabilities
 
-    output_file = Path(
-        "entities/model_predictions.csv"
+        if name == "Jina + basic NER":
+
+            best_predictions = (
+                probabilities,
+                predictions,
+                folds,
+            )
+
+    # -----------------------------------------------------
+    # Results
+    # -----------------------------------------------------
+
+    results_df = pd.DataFrame(
+        results
+    )
+
+    results_df = (
+        results_df
+        .sort_values(
+            "f1",
+            ascending=False,
+        )
+    )
+
+    print()
+    print("=" * 76)
+    print("GROUPED CROSS-VALIDATED RESULTS")
+    print("=" * 76)
+
+    display_columns = [
+        "model",
+        "accuracy",
+        "precision",
+        "recall",
+        "f1",
+        "auc",
+    ]
+
+    print(
+        results_df[
+            display_columns
+        ]
+        .round(4)
+        .to_string(
+            index=False
+        )
+    )
+
+    print()
+    print("=" * 76)
+    print("STANDARD DEVIATION ACROSS FOLDS")
+    print("=" * 76)
+
+    std_columns = [
+        "model",
+        "accuracy_std",
+        "precision_std",
+        "recall_std",
+        "f1_std",
+        "auc_std",
+    ]
+
+    print(
+        results_df[
+            std_columns
+        ]
+        .round(4)
+        .to_string(
+            index=False
+        )
+    )
+
+    # -----------------------------------------------------
+    # Save predictions from basic NER model
+    # -----------------------------------------------------
+
+    if best_predictions is not None:
+
+        (
+            probabilities,
+            predictions,
+            folds,
+        ) = best_predictions
+
+        df[
+            "same_event_probability"
+        ] = probabilities
+
+        df[
+            "same_event_prediction"
+        ] = predictions
+
+        df[
+            "cv_fold"
+        ] = folds
+
+        df[
+            "prediction_correct"
+        ] = (
+            df[
+                "same_event_prediction"
+            ]
+            == df[
+                "same_event"
+            ]
+        )
+
+    # -----------------------------------------------------
+    # Save
+    # -----------------------------------------------------
+
+    OUTPUT_FILE.parent.mkdir(
+        parents=True,
+        exist_ok=True,
     )
 
     df.to_csv(
-        output_file,
+        OUTPUT_FILE,
         index=False,
         encoding="utf-8-sig",
     )
@@ -351,8 +539,128 @@ def main():
     print()
     print(
         f"Predictions saved to: "
-        f"{output_file}"
+        f"{OUTPUT_FILE}"
     )
+
+    # -----------------------------------------------------
+    # Show errors
+    # -----------------------------------------------------
+
+    if best_predictions is not None:
+
+        errors = df[
+            ~df[
+                "prediction_correct"
+            ]
+        ].copy()
+
+        print()
+        print("=" * 76)
+        print(
+            "JINA + BASIC NER ERRORS"
+        )
+        print("=" * 76)
+
+        print(
+            f"Total errors: "
+            f"{len(errors)}"
+        )
+
+        false_positives = errors[
+            (
+                errors[
+                    "same_event_prediction"
+                ] == 1
+            )
+            & (
+                errors[
+                    "same_event"
+                ] == 0
+            )
+        ]
+
+        false_negatives = errors[
+            (
+                errors[
+                    "same_event_prediction"
+                ] == 0
+            )
+            & (
+                errors[
+                    "same_event"
+                ] == 1
+            )
+        ]
+
+        print(
+            f"False positives: "
+            f"{len(false_positives)}"
+        )
+
+        print(
+            f"False negatives: "
+            f"{len(false_negatives)}"
+        )
+
+        # -------------------------------------------------
+        # Most confident false positives
+        # -------------------------------------------------
+
+        print()
+        print(
+            "Most confident false positives:"
+        )
+
+        fp_columns = [
+            "target_id",
+            "candidate_id",
+            "event_label",
+            "similarity",
+            "shared_per",
+            "shared_org",
+            "shared_loc",
+            "entity_jaccard",
+            "same_event_probability",
+        ]
+
+        print(
+            false_positives
+            .sort_values(
+                "same_event_probability",
+                ascending=False,
+            )[
+                fp_columns
+            ]
+            .head(10)
+            .round(4)
+            .to_string(
+                index=False
+            )
+        )
+
+        # -------------------------------------------------
+        # Most confident false negatives
+        # -------------------------------------------------
+
+        print()
+        print(
+            "Most confident false negatives:"
+        )
+
+        print(
+            false_negatives
+            .sort_values(
+                "same_event_probability",
+                ascending=True,
+            )[
+                fp_columns
+            ]
+            .head(10)
+            .round(4)
+            .to_string(
+                index=False
+            )
+        )
 
 
 if __name__ == "__main__":

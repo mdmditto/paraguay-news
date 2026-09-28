@@ -2,7 +2,9 @@ from datetime import datetime, timezone
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -296,6 +298,91 @@ class ArticleEntity(Base):
 
     confidence: Mapped[float | None] = mapped_column(
         nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
+class Event(Base):
+    __tablename__ = "events"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+    )
+
+    title: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        index=True,
+    )
+
+    article_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
+class EventArticle(Base):
+    __tablename__ = "event_articles"
+
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "events.id",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+
+    article_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "articles.id",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+
+    match_probability: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+
+    similarity: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+
+    is_seed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
     )
 
     created_at: Mapped[datetime] = mapped_column(
