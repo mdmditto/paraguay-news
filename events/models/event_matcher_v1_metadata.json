@@ -1,0 +1,31 @@
+{
+  "version": "event_matcher_v1",
+  "classifier": "LogisticRegression",
+  "training_pairs": 440,
+  "unique_articles": 421,
+  "features": [
+    "similarity",
+    "shared_per",
+    "shared_org",
+    "shared_loc",
+    "entity_jaccard"
+  ],
+  "embedding_model": "jinaai/jina-embeddings-v5-text-small",
+  "embedding_task": "text-matching",
+  "ner_model": "Davlan/xlm-roberta-base-ner-hrl",
+  "cross_validation": {
+    "method": "StratifiedGroupKFold",
+    "group": "connected_component",
+    "n_splits": 5,
+    "random_state": 42
+  },
+  "best_oof_f1_threshold": 0.5,
+  "best_oof_f1": 0.891566265060241,
+  "coefficients": {
+    "similarity": 3.7324477687191675,
+    "entity_jaccard": 0.743398280073276,
+    "shared_loc": 0.44584644640067306,
+    "shared_org": 0.3303164170789482,
+    "shared_per": -0.27246518066803554
+  }
+}

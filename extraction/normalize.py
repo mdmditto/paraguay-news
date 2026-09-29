@@ -1,7 +1,12 @@
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from urllib.parse import urljoin, urlparse, urlunparse
 
 from dateutil import parser as date_parser
+
+PARAGUAY_TZ = ZoneInfo(
+    "America/Asuncion"
+)
 
 
 GENERIC_AUTHORS = {
@@ -109,21 +114,27 @@ def normalize_timestamp(
     value,
 ) -> datetime | None:
     """
-    Convert timestamps into timezone-aware
+    Convert publication timestamps into timezone-aware
     datetime objects.
 
-    If the timestamp has no timezone,
-    UTC is used as a fallback.
+    If the source explicitly provides a timezone,
+    preserve it.
+
+    If no timezone is supplied, interpret the timestamp
+    as Paraguay local time.
     """
 
     if value is None:
         return None
 
     if isinstance(value, datetime):
+
         dt = value
 
     else:
+
         try:
+
             dt = date_parser.parse(
                 str(value)
             )
@@ -133,11 +144,13 @@ def normalize_timestamp(
             TypeError,
             OverflowError,
         ):
+
             return None
 
     if dt.tzinfo is None:
+
         dt = dt.replace(
-            tzinfo=timezone.utc
+            tzinfo=PARAGUAY_TZ
         )
 
     return dt
