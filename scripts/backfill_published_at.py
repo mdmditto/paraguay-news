@@ -1,19 +1,20 @@
 import argparse
-import time
-from datetime import datetime
-from pathlib import Path
+import csv
+import json
 import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
+from requests.adapters import HTTPAdapter
 from sqlalchemy import select
+from urllib3.util.retry import Retry
 
-# ---------------------------------------------------------
-# Allow running:
-#
-#   python scripts/backfill_published_at.py
-#
-# from the project root.
-# ---------------------------------------------------------
+
+# =========================================================
+# PROJECT PATH
+# =========================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -41,31 +42,267 @@ from extraction.normalize import (
 # CONFIGURATION
 # =========================================================
 
-DEFAULT_BATCH_SIZE = 100
-DEFAULT_DELAY = 0.25
+BACKUP_DIR = PROJECT_ROOT / "backups"
+
+AUDIT_FILE = (
+    BACKUP_DIR
+    / "published_at_backfill_audit.csv"
+)
+
+PROGRESS_FILE = (
+    BACKUP_DIR
+    / "published_at_backfill_progress.json"
+)
+
+DEFAULT_BATCH_SIZE = 50
+DEFAULT_DELAY = 0.30
 DEFAULT_TIMEOUT = 20
 
 
+AUDIT_FIELDS = [
+    "article_id",
+    "source_id",
+    "url",
+    "old_published_at",
+    "new_published_at",
+    "raw_metadata",
+    "processed_at",
+]
+
+
 # =========================================================
-# HELPERS
+# HTTP SESSION
+# =========================================================
+
+def create_http_session():
+    """
+    Create a requests session with conservative retries.
+    """
+
+    session = requests.Session()
+
+    session.headers.update(
+        HEADERS
+    )
+
+    retry = Retry(
+        total=3,
+        connect=3,
+        read=3,
+        status=3,
+        backoff_factor=1.0,
+        status_forcelist=[
+            429,
+            500,
+            502,
+            503,
+            504,
+        ],
+        allowed_methods=[
+            "GET",
+        ],
+        raise_on_status=False,
+    )
+
+    adapter = HTTPAdapter(
+        max_retries=retry
+    )
+
+    session.mount(
+        "http://",
+        adapter,
+    )
+
+    session.mount(
+        "https://",
+        adapter,
+    )
+
+    return session
+
+
+# =========================================================
+# AUDIT FILE
+# =========================================================
+
+def initialize_audit_file():
+    """
+    Create the audit CSV if it does not already exist.
+    """
+
+    BACKUP_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    if AUDIT_FILE.exists():
+        return
+
+    with AUDIT_FILE.open(
+        "w",
+        newline="",
+        encoding="utf-8",
+    ) as file:
+
+        writer = csv.DictWriter(
+            file,
+            fieldnames=AUDIT_FIELDS,
+        )
+
+        writer.writeheader()
+
+
+def write_audit_row(
+    article,
+    old_timestamp,
+    new_timestamp,
+    raw_timestamp,
+):
+    """
+    Append one timestamp modification to the audit log.
+
+    The audit row is written BEFORE the corresponding
+    database commit.
+    """
+
+    initialize_audit_file()
+
+    with AUDIT_FILE.open(
+        "a",
+        newline="",
+        encoding="utf-8",
+    ) as file:
+
+        writer = csv.DictWriter(
+            file,
+            fieldnames=AUDIT_FIELDS,
+        )
+
+        writer.writerow(
+            {
+                "article_id": article.id,
+                "source_id": article.source_id,
+                "url": article.url,
+                "old_published_at": (
+                    old_timestamp.isoformat()
+                    if old_timestamp
+                    else ""
+                ),
+                "new_published_at": (
+                    new_timestamp.isoformat()
+                    if new_timestamp
+                    else ""
+                ),
+                "raw_metadata": raw_timestamp,
+                "processed_at": (
+                    datetime.now(
+                        timezone.utc
+                    ).isoformat()
+                ),
+            }
+        )
+
+        # Make sure the audit entry reaches disk.
+        file.flush()
+
+
+# =========================================================
+# PROGRESS
+# =========================================================
+
+def load_progress():
+    """
+    Load the last successfully committed article ID.
+    """
+
+    if not PROGRESS_FILE.exists():
+        return None
+
+    try:
+
+        with PROGRESS_FILE.open(
+            "r",
+            encoding="utf-8",
+        ) as file:
+
+            data = json.load(
+                file
+            )
+
+        return data.get(
+            "last_committed_article_id"
+        )
+
+    except (
+        json.JSONDecodeError,
+        OSError,
+    ):
+
+        return None
+
+
+def save_progress(
+    article_id,
+):
+    """
+    Save the last successfully committed article ID.
+
+    Write atomically through a temporary file.
+    """
+
+    BACKUP_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    temporary_file = (
+        PROGRESS_FILE.with_suffix(
+            ".tmp"
+        )
+    )
+
+    data = {
+        "last_committed_article_id": (
+            article_id
+        ),
+        "updated_at": (
+            datetime.now(
+                timezone.utc
+            ).isoformat()
+        ),
+    }
+
+    with temporary_file.open(
+        "w",
+        encoding="utf-8",
+    ) as file:
+
+        json.dump(
+            data,
+            file,
+            indent=2,
+        )
+
+    temporary_file.replace(
+        PROGRESS_FILE
+    )
+
+
+# =========================================================
+# TIMESTAMP EXTRACTION
 # =========================================================
 
 def fetch_precise_timestamp(
-    session: requests.Session,
-    url: str,
-    timeout: int,
-) -> tuple[str | None, datetime | None]:
+    session,
+    url,
+    timeout,
+):
     """
-    Fetch an article page and extract a precise publication
-    timestamp from JSON-LD or HTML metadata.
+    Fetch article HTML and extract a precise publication
+    timestamp.
 
-    Important:
-    We intentionally do NOT use Trafilatura's date fallback
-    here because this script is meant to repair timestamps
-    only when better metadata is available.
-
-    Returns:
-        (raw_timestamp, normalized_datetime)
+    We intentionally do NOT use Trafilatura's date-only
+    fallback here.
     """
 
     response = session.get(
@@ -75,33 +312,38 @@ def fetch_precise_timestamp(
 
     response.raise_for_status()
 
-    raw_timestamp = extract_publication_date(
-        response.text
+    raw_timestamp = (
+        extract_publication_date(
+            response.text
+        )
     )
 
     if not raw_timestamp:
         return None, None
 
-    normalized = normalize_timestamp(
-        raw_timestamp
+    normalized_timestamp = (
+        normalize_timestamp(
+            raw_timestamp
+        )
     )
 
     return (
         raw_timestamp,
-        normalized,
+        normalized_timestamp,
     )
 
 
+# =========================================================
+# ARTICLE QUERY
+# =========================================================
+
 def load_articles(
     db,
-    start_id: int | None,
-    limit: int | None,
+    start_id=None,
+    limit=None,
 ):
     """
-    Load articles in ID order.
-
-    start_id allows the backfill to resume without
-    beginning again from the first article.
+    Load articles in deterministic ID order.
     """
 
     stmt = (
@@ -110,11 +352,13 @@ def load_articles(
     )
 
     if start_id is not None:
+
         stmt = stmt.where(
             Article.id >= start_id
         )
 
     if limit is not None:
+
         stmt = stmt.limit(
             limit
         )
@@ -129,72 +373,111 @@ def load_articles(
 # =========================================================
 
 def backfill(
-    start_id: int | None,
-    limit: int | None,
-    batch_size: int,
-    delay: float,
-    timeout: int,
-    dry_run: bool,
+    start_id,
+    limit,
+    batch_size,
+    delay,
+    timeout,
+    dry_run,
+    resume,
 ):
     db = SessionLocal()
 
-    http = requests.Session()
+    http = create_http_session()
 
-    http.headers.update(
-        HEADERS
+    initialize_audit_file()
+
+    # -----------------------------------------------------
+    # RESUME
+    # -----------------------------------------------------
+
+    if (
+        resume
+        and start_id is None
+    ):
+
+        last_committed = (
+            load_progress()
+        )
+
+        if last_committed is not None:
+
+            start_id = (
+                last_committed + 1
+            )
+
+            print(
+                f"Resuming after article "
+                f"ID={last_committed}"
+            )
+
+    articles = load_articles(
+        db=db,
+        start_id=start_id,
+        limit=limit,
     )
 
+    total = len(
+        articles
+    )
+
+    print()
+    print("=" * 78)
+    print("PUBLISHED_AT BACKFILL")
+    print("=" * 78)
+
+    print(
+        f"Articles selected : {total}"
+    )
+
+    print(
+        f"Start ID          : {start_id}"
+    )
+
+    print(
+        f"Limit             : {limit}"
+    )
+
+    print(
+        f"Batch size        : {batch_size}"
+    )
+
+    print(
+        f"Delay             : {delay}s"
+    )
+
+    print(
+        f"Timeout           : {timeout}s"
+    )
+
+    print(
+        f"Dry run           : {dry_run}"
+    )
+
+    print(
+        f"Resume            : {resume}"
+    )
+
+    print(
+        f"Audit file        : {AUDIT_FILE}"
+    )
+
+    print()
+
+    stats = {
+        "processed": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "no_precise_date": 0,
+        "request_error": 0,
+        "parse_error": 0,
+    }
+
+    last_successful_article_id = None
+
+    pending_changes = []
+
     try:
-
-        articles = load_articles(
-            db=db,
-            start_id=start_id,
-            limit=limit,
-        )
-
-        total = len(
-            articles
-        )
-
-        print()
-        print("=" * 78)
-        print("PUBLISHED_AT BACKFILL")
-        print("=" * 78)
-
-        print(
-            f"Articles selected: {total}"
-        )
-
-        print(
-            f"Start ID: {start_id}"
-        )
-
-        print(
-            f"Limit: {limit}"
-        )
-
-        print(
-            f"Batch size: {batch_size}"
-        )
-
-        print(
-            f"Delay: {delay}s"
-        )
-
-        print(
-            f"Dry run: {dry_run}"
-        )
-
-        print()
-
-        stats = {
-            "processed": 0,
-            "updated": 0,
-            "unchanged": 0,
-            "no_precise_date": 0,
-            "request_error": 0,
-            "parse_error": 0,
-        }
 
         for index, article in enumerate(
             articles,
@@ -208,6 +491,10 @@ def backfill(
             old_timestamp = (
                 article.published_at
             )
+
+            # ---------------------------------------------
+            # DOWNLOAD + EXTRACT
+            # ---------------------------------------------
 
             try:
 
@@ -232,6 +519,8 @@ def backfill(
                     f"REQUEST ERROR: {exc}"
                 )
 
+                # Do NOT advance resumable progress past
+                # an unsuccessful article.
                 time.sleep(
                     delay
                 )
@@ -256,6 +545,10 @@ def backfill(
 
                 continue
 
+            # ---------------------------------------------
+            # NO PRECISE DATE
+            # ---------------------------------------------
+
             if (
                 raw_timestamp is None
                 or new_timestamp is None
@@ -271,17 +564,15 @@ def backfill(
                     f"NO PRECISE DATE"
                 )
 
-                time.sleep(
-                    delay
+                last_successful_article_id = (
+                    article.id
                 )
 
-                continue
+            # ---------------------------------------------
+            # ALREADY CORRECT
+            # ---------------------------------------------
 
-            # -------------------------------------------------
-            # Compare timestamps
-            # -------------------------------------------------
-
-            if (
+            elif (
                 old_timestamp is not None
                 and old_timestamp == new_timestamp
             ):
@@ -289,6 +580,14 @@ def backfill(
                 stats[
                     "unchanged"
                 ] += 1
+
+                last_successful_article_id = (
+                    article.id
+                )
+
+            # ---------------------------------------------
+            # UPDATE
+            # ---------------------------------------------
 
             else:
 
@@ -313,44 +612,90 @@ def backfill(
                 )
 
                 print(
-                    f"OLD: {old_timestamp}"
+                    f"OLD: "
+                    f"{old_timestamp}"
                 )
 
                 print(
-                    f"NEW: {new_timestamp}"
+                    f"NEW: "
+                    f"{new_timestamp}"
                 )
 
                 if not dry_run:
+
+                    # Save information required to write
+                    # the audit log immediately before
+                    # committing.
+                    pending_changes.append(
+                        (
+                            article,
+                            old_timestamp,
+                            new_timestamp,
+                            raw_timestamp,
+                        )
+                    )
 
                     article.published_at = (
                         new_timestamp
                     )
 
-            # -------------------------------------------------
-            # Commit periodically
-            # -------------------------------------------------
+                last_successful_article_id = (
+                    article.id
+                )
+
+            # ---------------------------------------------
+            # COMMIT BATCH
+            # ---------------------------------------------
 
             if (
                 not dry_run
                 and index % batch_size == 0
             ):
 
+                # Write audit information first.
+                for (
+                    changed_article,
+                    old_value,
+                    new_value,
+                    raw_value,
+                ) in pending_changes:
+
+                    write_audit_row(
+                        article=changed_article,
+                        old_timestamp=old_value,
+                        new_timestamp=new_value,
+                        raw_timestamp=raw_value,
+                    )
+
                 db.commit()
+
+                pending_changes.clear()
+
+                if (
+                    last_successful_article_id
+                    is not None
+                ):
+
+                    save_progress(
+                        last_successful_article_id
+                    )
 
                 print()
                 print(
-                    f"--- COMMIT at "
+                    f"--- COMMIT "
                     f"{index}/{total} ---"
                 )
                 print()
 
-            # -------------------------------------------------
-            # Progress
-            # -------------------------------------------------
+            # ---------------------------------------------
+            # PROGRESS REPORT
+            # ---------------------------------------------
 
             if index % 100 == 0:
 
                 print()
+                print("-" * 78)
+
                 print(
                     f"Progress: "
                     f"{index}/{total}"
@@ -362,75 +707,138 @@ def backfill(
                 )
 
                 print(
+                    f"Unchanged: "
+                    f"{stats['unchanged']}"
+                )
+
+                print(
                     f"No precise date: "
                     f"{stats['no_precise_date']}"
                 )
 
                 print(
-                    f"Errors: "
-                    f"{stats['request_error'] + stats['parse_error']}"
+                    f"Request errors: "
+                    f"{stats['request_error']}"
                 )
 
+                print(
+                    f"Parse errors: "
+                    f"{stats['parse_error']}"
+                )
+
+                print(
+                    "-" * 78
+                )
                 print()
 
             time.sleep(
                 delay
             )
 
-        # -----------------------------------------------------
-        # Final commit
-        # -----------------------------------------------------
+        # -------------------------------------------------
+        # FINAL COMMIT
+        # -------------------------------------------------
 
         if not dry_run:
 
+            for (
+                changed_article,
+                old_value,
+                new_value,
+                raw_value,
+            ) in pending_changes:
+
+                write_audit_row(
+                    article=changed_article,
+                    old_timestamp=old_value,
+                    new_timestamp=new_value,
+                    raw_timestamp=raw_value,
+                )
+
             db.commit()
 
-        # -----------------------------------------------------
-        # SUMMARY
-        # -----------------------------------------------------
+            pending_changes.clear()
 
-        print()
-        print("=" * 78)
-        print("BACKFILL SUMMARY")
-        print("=" * 78)
+            if (
+                last_successful_article_id
+                is not None
+            ):
 
-        for key, value in stats.items():
-
-            print(
-                f"{key:20s}: {value}"
-            )
-
-        print()
-
-        if dry_run:
-
-            print(
-                "DRY RUN: no database rows were modified."
-            )
+                save_progress(
+                    last_successful_article_id
+                )
 
     except KeyboardInterrupt:
 
         print()
         print()
-        print("Interrupted by user.")
+        print(
+            "Interrupted by user."
+        )
 
         if not dry_run:
 
             print(
-                "Committing completed batch..."
+                "Rolling back the current "
+                "uncommitted batch..."
             )
 
-            db.commit()
+            db.rollback()
 
         print(
-            "You can resume using --start-id."
+            "Previously committed batches "
+            "remain safe."
         )
+
+        print(
+            "Run again with --resume."
+        )
+
+    except Exception:
+
+        if not dry_run:
+
+            db.rollback()
+
+        raise
 
     finally:
 
         http.close()
-
         db.close()
+
+    # =====================================================
+    # SUMMARY
+    # =====================================================
+
+    print()
+    print("=" * 78)
+    print("BACKFILL SUMMARY")
+    print("=" * 78)
+
+    for key, value in stats.items():
+
+        print(
+            f"{key:20s}: {value}"
+        )
+
+    print()
+
+    if dry_run:
+
+        print(
+            "DRY RUN: database was not modified."
+        )
+
+    else:
+
+        print(
+            f"Audit log: {AUDIT_FILE}"
+        )
+
+        print(
+            f"Progress: {PROGRESS_FILE}"
+        )
 
 
 # =========================================================
@@ -441,8 +849,8 @@ def main():
 
     parser = argparse.ArgumentParser(
         description=(
-            "Backfill precise article publication "
-            "timestamps from HTML metadata."
+            "Safely backfill precise publication "
+            "timestamps."
         )
     )
 
@@ -450,18 +858,12 @@ def main():
         "--start-id",
         type=int,
         default=None,
-        help=(
-            "Start processing from this article ID."
-        ),
     )
 
     parser.add_argument(
         "--limit",
         type=int,
         default=None,
-        help=(
-            "Maximum number of articles to process."
-        ),
     )
 
     parser.add_argument(
@@ -474,9 +876,6 @@ def main():
         "--delay",
         type=float,
         default=DEFAULT_DELAY,
-        help=(
-            "Delay between requests in seconds."
-        ),
     )
 
     parser.add_argument(
@@ -488,9 +887,14 @@ def main():
     parser.add_argument(
         "--dry-run",
         action="store_true",
+    )
+
+    parser.add_argument(
+        "--resume",
+        action="store_true",
         help=(
-            "Extract timestamps but do not update "
-            "the database."
+            "Resume after the last committed "
+            "article ID."
         ),
     )
 
@@ -503,6 +907,7 @@ def main():
         delay=args.delay,
         timeout=args.timeout,
         dry_run=args.dry_run,
+        resume=args.resume,
     )
 
 
