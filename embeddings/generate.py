@@ -8,26 +8,32 @@ from database.db import SessionLocal
 from database.models import Article, ArticleEmbedding
 
 
+# =========================================================
+# CONFIG
+# =========================================================
+
 MODEL_NAME = "jinaai/jina-embeddings-v5-text-small"
 TASK = "text-matching"
 DIMENSIONS = 1024
 
-LIMIT = 900
+# Number of articles processed before committing to PostgreSQL.
+BATCH_LIMIT = 900
+
+# Number of articles sent through the GPU at once.
 BATCH_SIZE = 8
 
 
+# =========================================================
+# ARTICLE TEXT
+# =========================================================
+
 def build_article_text(article: Article) -> str:
     """
-    Build the text that will represent an article.
+    Build the text representation used to generate
+    the article embedding.
 
-    For now:
+    Current representation:
         title + body
-
-    Later we can experiment with:
-        title + body + entities
-        title weighted differently
-        summaries
-        etc.
     """
 
     title = (article.title or "").strip()
@@ -39,7 +45,15 @@ Artículo:
 {body}"""
 
 
+# =========================================================
+# MODEL
+# =========================================================
+
 def load_model():
+    """
+    Load Jina Embeddings v5-small on the GPU.
+    """
+
     print("Loading Jina v5-small...")
 
     if not torch.cuda.is_available():
@@ -66,17 +80,26 @@ def load_model():
     return model
 
 
+# =========================================================
+# DATABASE
+# =========================================================
+
 def get_articles_without_embeddings(
     session,
     limit: int,
 ):
     """
-    Get recent articles that do not already have
-    an embedding for this model/task.
+    Return articles that do not already have an embedding
+    for the current model/task combination.
+
+    This makes the pipeline resumable and prevents existing
+    embeddings from being regenerated.
     """
 
     already_embedded = (
-        select(ArticleEmbedding.article_id)
+        select(
+            ArticleEmbedding.article_id
+        )
         .where(
             ArticleEmbedding.model == MODEL_NAME,
             ArticleEmbedding.task == TASK,
@@ -86,7 +109,9 @@ def get_articles_without_embeddings(
     stmt = (
         select(Article)
         .where(
-            ~Article.id.in_(already_embedded)
+            ~Article.id.in_(
+                already_embedded
+            )
         )
         .order_by(
             Article.published_at.desc().nullslast(),
@@ -96,9 +121,15 @@ def get_articles_without_embeddings(
     )
 
     return list(
-        session.scalars(stmt).all()
+        session.scalars(
+            stmt
+        ).all()
     )
 
+
+# =========================================================
+# MAIN PIPELINE
+# =========================================================
 
 def main():
 
@@ -106,104 +137,214 @@ def main():
     print("ARTICLE EMBEDDING PIPELINE")
     print("=" * 60)
 
+    # Load the model only once.
     model = load_model()
 
-    session = SessionLocal()
+    total_saved = 0
+    batch_number = 0
 
-    try:
+    while True:
 
-        articles = get_articles_without_embeddings(
-            session,
-            LIMIT,
-        )
+        batch_number += 1
 
-        print(
-            f"\nArticles to embed: {len(articles)}"
-        )
+        session = SessionLocal()
 
-        if not articles:
+        try:
+
+            # -------------------------------------------------
+            # Get next group of unembedded articles
+            # -------------------------------------------------
+
+            articles = get_articles_without_embeddings(
+                session,
+                BATCH_LIMIT,
+            )
+
+            if not articles:
+
+                print()
+                print("=" * 60)
+                print("EMBEDDING PIPELINE COMPLETE")
+                print("=" * 60)
+
+                print(
+                    f"Total embeddings saved this run: "
+                    f"{total_saved}"
+                )
+
+                break
+
+            print()
+            print("=" * 60)
             print(
-                "No new articles need embeddings."
+                f"BATCH {batch_number}"
             )
-            return
+            print("=" * 60)
 
-        texts = [
-            build_article_text(article)
-            for article in articles
-        ]
-
-        print(
-            f"Generating embeddings "
-            f"(batch size={BATCH_SIZE})..."
-        )
-
-        torch.cuda.reset_peak_memory_stats()
-
-        with torch.inference_mode():
-
-            embeddings = model.encode(
-                texts,
-                task=TASK,
-                batch_size=BATCH_SIZE,
-                normalize_embeddings=True,
-                show_progress_bar=True,
-                convert_to_numpy=True,
+            print(
+                f"Articles to embed: "
+                f"{len(articles)}"
             )
 
-        print(
-            "\nEmbedding shape:",
-            embeddings.shape,
-        )
+            # -------------------------------------------------
+            # Build text representations
+            # -------------------------------------------------
 
-        if embeddings.shape[1] != DIMENSIONS:
-            raise RuntimeError(
-                f"Expected {DIMENSIONS} dimensions, "
-                f"got {embeddings.shape[1]}"
+            texts = [
+                build_article_text(article)
+                for article in articles
+            ]
+
+            print(
+                f"Generating embeddings "
+                f"(GPU batch size={BATCH_SIZE})..."
             )
 
-        print("\nSaving embeddings...")
+            torch.cuda.reset_peak_memory_stats()
 
-        for article, embedding in zip(
-            articles,
-            embeddings,
-        ):
+            # -------------------------------------------------
+            # Generate embeddings
+            # -------------------------------------------------
 
-            row = ArticleEmbedding(
-                article_id=article.id,
-                model=MODEL_NAME,
-                task=TASK,
-                dimensions=DIMENSIONS,
-                embedding=embedding.tolist(),
-                created_at=datetime.now().astimezone(),
+            with torch.inference_mode():
+
+                embeddings = model.encode(
+                    texts,
+                    task=TASK,
+                    batch_size=BATCH_SIZE,
+                    normalize_embeddings=True,
+                    show_progress_bar=True,
+                    convert_to_numpy=True,
+                )
+
+            print(
+                "\nEmbedding shape:",
+                embeddings.shape,
             )
 
-            session.add(row)
+            # -------------------------------------------------
+            # Validate dimensions
+            # -------------------------------------------------
 
-        session.commit()
+            if embeddings.shape[1] != DIMENSIONS:
 
-        print(
-            f"\nSaved {len(articles)} embeddings."
-        )
+                raise RuntimeError(
+                    f"Expected {DIMENSIONS} dimensions, "
+                    f"got {embeddings.shape[1]}"
+                )
 
-        print(
-            "Peak GPU memory:",
-            round(
-                torch.cuda.max_memory_allocated()
-                / 1024**3,
-                2,
-            ),
-            "GB",
-        )
+            # -------------------------------------------------
+            # Save to PostgreSQL
+            # -------------------------------------------------
 
-    except Exception:
+            print(
+                "\nSaving embeddings..."
+            )
 
-        session.rollback()
-        raise
+            created_at = (
+                datetime.now().astimezone()
+            )
 
-    finally:
+            for article, embedding in zip(
+                articles,
+                embeddings,
+            ):
 
-        session.close()
+                row = ArticleEmbedding(
+                    article_id=article.id,
+                    model=MODEL_NAME,
+                    task=TASK,
+                    dimensions=DIMENSIONS,
+                    embedding=embedding.tolist(),
+                    created_at=created_at,
+                )
 
+                session.add(row)
+
+            # One transaction per BATCH_LIMIT articles.
+            session.commit()
+
+            saved = len(articles)
+
+            total_saved += saved
+
+            print(
+                f"\nSaved {saved} embeddings."
+            )
+
+            print(
+                f"Total saved this run: "
+                f"{total_saved}"
+            )
+
+            print(
+                "Peak GPU memory:",
+                round(
+                    torch.cuda.max_memory_allocated()
+                    / 1024**3,
+                    2,
+                ),
+                "GB",
+            )
+
+            # -------------------------------------------------
+            # Release batch objects before next iteration
+            # -------------------------------------------------
+
+            del embeddings
+            del texts
+            del articles
+
+            # Release unused cached CUDA memory.
+            torch.cuda.empty_cache()
+
+        # -----------------------------------------------------
+        # Graceful Ctrl+C
+        # -----------------------------------------------------
+
+        except KeyboardInterrupt:
+
+            session.rollback()
+
+            print()
+            print("=" * 60)
+            print("INTERRUPTED")
+            print("=" * 60)
+
+            print(
+                "The current unfinished database "
+                "transaction was rolled back."
+            )
+
+            print(
+                f"Previously committed embeddings "
+                f"from this run: {total_saved}"
+            )
+
+            print()
+            print(
+                "Run the script again to resume."
+            )
+
+            break
+
+        # -----------------------------------------------------
+        # Other errors
+        # -----------------------------------------------------
+
+        except Exception:
+
+            session.rollback()
+            raise
+
+        finally:
+
+            session.close()
+
+
+# =========================================================
+# ENTRY POINT
+# =========================================================
 
 if __name__ == "__main__":
     main()
