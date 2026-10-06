@@ -483,3 +483,33 @@ class EventContent(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+
+class EventContentContext(Base):
+    __tablename__ = "event_content_context"
+
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "event_content.event_id",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+
+    article_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "articles.id",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+
+    position: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+
+    is_representative: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )

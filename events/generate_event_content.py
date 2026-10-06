@@ -12,6 +12,7 @@ from database.db import SessionLocal
 from database.models import (
     Event,
     EventContent,
+    EventContentContext,
 )
 
 from events.build_event_context import (
@@ -225,8 +226,7 @@ def call_ollama(
         OLLAMA_URL,
         data=data,
         headers={
-            "Content-Type":
-                "application/json",
+            "Content-Type": "application/json",
         },
         method="POST",
     )
@@ -336,8 +336,11 @@ def get_events_to_generate(
     limit: int | None,
 ):
 
-    # EventContent is LEFT JOINed so we only select
-    # events for which no draft has been generated yet.
+    # Only events with more than one article are
+    # summarized for now.
+    #
+    # LEFT JOIN with EventContent ensures that events
+    # already generated are skipped automatically.
 
     stmt = (
         select(Event)
@@ -355,8 +358,6 @@ def get_events_to_generate(
             EventContent.event_id
             .is_(None),
         )
-
-        # Most recently active events first.
         .order_by(
             Event.last_seen_at.desc(),
             Event.id.desc(),
@@ -374,6 +375,83 @@ def get_events_to_generate(
             stmt
         ).all()
     )
+
+
+# =========================================================
+# SAVE DRAFT
+# =========================================================
+
+def save_event_draft(
+    session,
+    event,
+    context,
+    result,
+):
+
+    # -----------------------------------------------------
+    # Save generated title + summary
+    # -----------------------------------------------------
+
+    content = EventContent(
+        event_id=event.id,
+
+        generated_title=(
+            result["title"]
+        ),
+
+        generated_summary=(
+            result["summary"]
+        ),
+
+        status="draft",
+
+        model=OLLAMA_MODEL,
+    )
+
+    session.add(
+        content
+    )
+
+    # -----------------------------------------------------
+    # Save the EXACT context used by the LLM.
+    #
+    # This allows the review interface to later show
+    # precisely which articles Qwen saw when generating
+    # the title and summary.
+    # -----------------------------------------------------
+
+    for position, article in enumerate(
+        context["articles"],
+        start=1,
+    ):
+
+        context_row = EventContentContext(
+            event_id=event.id,
+
+            article_id=article[
+                "article_id"
+            ],
+
+            position=position,
+
+            is_representative=article[
+                "is_representative"
+            ],
+        )
+
+        session.add(
+            context_row
+        )
+
+    # -----------------------------------------------------
+    # One transaction per event.
+    #
+    # EventContent and EventContentContext are committed
+    # together. If anything fails, neither should remain
+    # partially saved.
+    # -----------------------------------------------------
+
+    session.commit()
 
 
 # =========================================================
@@ -403,6 +481,10 @@ def main():
         "--max-articles",
         type=int,
         default=MAX_CONTEXT_ARTICLES,
+        help=(
+            "Maximum number of articles "
+            "included in the LLM context."
+        ),
     )
 
     args = parser.parse_args()
@@ -431,6 +513,11 @@ def main():
             f"{len(events)}"
         )
 
+        print(
+            f"Max context articles: "
+            f"{args.max_articles}"
+        )
+
         print()
 
         generated = 0
@@ -455,12 +542,28 @@ def main():
 
             try:
 
+                # -----------------------------------------
+                # Load all articles belonging to event
+                # -----------------------------------------
+
                 articles = (
                     load_event_articles(
                         session,
                         event.id,
                     )
                 )
+
+                if not articles:
+
+                    raise RuntimeError(
+                        f"Event {event.id} "
+                        f"contains no usable articles."
+                    )
+
+                # -----------------------------------------
+                # Select representative + supporting
+                # articles.
+                # -----------------------------------------
 
                 selected = (
                     select_context_articles(
@@ -472,47 +575,56 @@ def main():
                     )
                 )
 
+                if not selected:
+
+                    raise RuntimeError(
+                        f"No context articles selected "
+                        f"for event {event.id}."
+                    )
+
+                # -----------------------------------------
+                # Build context
+                # -----------------------------------------
+
                 context = build_context(
                     event,
                     articles,
                     selected,
                 )
 
+                # -----------------------------------------
+                # Build prompt
+                # -----------------------------------------
+
                 prompt = build_llm_prompt(
                     context
                 )
+
+                # -----------------------------------------
+                # Generate
+                # -----------------------------------------
 
                 result = call_ollama(
                     prompt
                 )
 
-                content = EventContent(
-                    event_id=event.id,
+                # -----------------------------------------
+                # Persist BOTH generated content and
+                # exact LLM context.
+                # -----------------------------------------
 
-                    generated_title=(
-                        result["title"]
-                    ),
-
-                    generated_summary=(
-                        result["summary"]
-                    ),
-
-                    status="draft",
-
-                    model=OLLAMA_MODEL,
+                save_event_draft(
+                    session=session,
+                    event=event,
+                    context=context,
+                    result=result,
                 )
-
-                session.add(
-                    content
-                )
-
-                # Commit every generation.
-                #
-                # If the script is interrupted, everything
-                # already generated remains saved.
-                session.commit()
 
                 generated += 1
+
+                # -----------------------------------------
+                # Diagnostics
+                # -----------------------------------------
 
                 print()
                 print("TITLE:")
@@ -547,12 +659,19 @@ def main():
                     f"{result['elapsed_seconds']}s"
                 )
 
+                print(
+                    "Saved as draft."
+                )
+
             except Exception as exc:
 
+                # Roll back anything associated with this
+                # particular event.
                 session.rollback()
 
                 failed += 1
 
+                print()
                 print(
                     f"ERROR: {exc}"
                 )
