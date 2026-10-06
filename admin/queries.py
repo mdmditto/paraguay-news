@@ -73,6 +73,7 @@ def get_event_for_review(
             EventContent.generated_summary,
             EventContent.final_title,
             EventContent.final_summary,
+            EventContent.selected_image_article_id,
             EventContent.status,
             EventContent.model,
             EventContent.generated_at,

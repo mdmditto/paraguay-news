@@ -484,6 +484,13 @@ class EventContent(Base):
         nullable=True,
     )
 
+    selected_image_article_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "articles.id",
+            ondelete="SET NULL",),
+            nullable=True,
+    )
+
 class EventContentContext(Base):
     __tablename__ = "event_content_context"
 

@@ -3,11 +3,22 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Add project root to Python path.
+# =========================================================
+# PROJECT PATH
+# =========================================================
+
+# Add project root to Python path so imports such as
+# "database" and "admin" work correctly with Streamlit.
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# =========================================================
+# IMPORTS
+# =========================================================
 
 import streamlit as st
 
@@ -17,20 +28,7 @@ from admin.actions import (
     approve_event,
     reject_event,
     save_edits,
-)
-
-from admin.queries import (
-    get_all_event_articles,
-    get_context_articles,
-    get_draft_events,
-    get_event_for_review,
-)
-
-
-from admin.actions import (
-    approve_event,
-    reject_event,
-    save_edits,
+    select_event_image,
 )
 
 from admin.queries import (
@@ -42,7 +40,7 @@ from admin.queries import (
 
 
 # =========================================================
-# PAGE
+# PAGE CONFIGURATION
 # =========================================================
 
 st.set_page_config(
@@ -57,6 +55,11 @@ st.set_page_config(
 # =========================================================
 
 def effective_time(row):
+    """
+    Use published_at when available.
+    Otherwise fall back to scraped_at.
+    """
+
     return (
         row.published_at
         or row.scraped_at
@@ -64,6 +67,9 @@ def effective_time(row):
 
 
 def format_datetime(value):
+    """
+    Format datetime for display.
+    """
 
     if value is None:
         return "Sin fecha"
@@ -78,7 +84,7 @@ def render_article(
     context=False,
 ):
     """
-    Render one article as an expandable card.
+    Render one article inside an expandable card.
     """
 
     source = (
@@ -162,17 +168,134 @@ def render_article(
             )
 
 
+def render_image_candidate(
+    article,
+    event,
+    session,
+    button_key_prefix,
+):
+    """
+    Render an image candidate and allow the user
+    to select it as the event image.
+    """
+
+    if not article.image_url:
+        return
+
+    # -----------------------------------------------------
+    # Image
+    # -----------------------------------------------------
+
+    try:
+
+        st.image(
+            article.image_url,
+            use_container_width=True,
+        )
+
+    except Exception:
+
+        st.warning(
+            "Could not load image."
+        )
+
+    # -----------------------------------------------------
+    # Source
+    # -----------------------------------------------------
+
+    st.markdown(
+        f"**{article.source_name}**"
+    )
+
+    # -----------------------------------------------------
+    # Article title
+    # -----------------------------------------------------
+
+    if article.title:
+
+        st.caption(
+            article.title
+        )
+
+    # -----------------------------------------------------
+    # Badges
+    # -----------------------------------------------------
+
+    if (
+        article.article_id
+        == event.representative_article_id
+    ):
+
+        st.caption(
+            "⭐ Representative article"
+        )
+
+    # -----------------------------------------------------
+    # Original article
+    # -----------------------------------------------------
+
+    if article.url:
+
+        st.link_button(
+            "Open article ↗",
+            article.url,
+            use_container_width=True,
+        )
+
+    # -----------------------------------------------------
+    # Selected / Select button
+    # -----------------------------------------------------
+
+    if (
+        article.article_id
+        == event.selected_image_article_id
+    ):
+
+        st.success(
+            "✓ Selected image"
+        )
+
+    else:
+
+        if st.button(
+            "Select image",
+            key=(
+                f"{button_key_prefix}_"
+                f"{event.id}_"
+                f"{article.article_id}"
+            ),
+            use_container_width=True,
+        ):
+
+            select_event_image(
+                session,
+                event.id,
+                article.article_id,
+            )
+
+            st.rerun()
+
+
 # =========================================================
-# SIDEBAR
+# DATABASE SESSION
 # =========================================================
 
 session = SessionLocal()
 
 try:
 
+    # =====================================================
+    # LOAD DRAFTS
+    # =====================================================
+
     drafts = get_draft_events(
         session
     )
+
+
+    # =====================================================
+    # SIDEBAR
+    # =====================================================
 
     st.sidebar.title(
         "Editorial Review"
@@ -191,6 +314,11 @@ try:
         )
 
         st.stop()
+
+
+    # -----------------------------------------------------
+    # Event selector
+    # -----------------------------------------------------
 
     event_options = {
         (
@@ -216,6 +344,11 @@ try:
         selected_label
     ]
 
+
+    # =====================================================
+    # LOAD EVENT
+    # =====================================================
+
     event = get_event_for_review(
         session,
         event_id,
@@ -229,6 +362,11 @@ try:
 
         st.stop()
 
+
+    # =====================================================
+    # LOAD CONTEXT ARTICLES
+    # =====================================================
+
     context_articles = (
         get_context_articles(
             session,
@@ -236,11 +374,29 @@ try:
         )
     )
 
+
+    # =====================================================
+    # LOAD ALL EVENT ARTICLES
+    # =====================================================
+
     all_articles = (
         get_all_event_articles(
             session,
             event_id,
         )
+    )
+
+
+    # =====================================================
+    # EVENT STATISTICS
+    # =====================================================
+
+    source_count = len(
+        {
+            article.source_id
+            for article
+            in all_articles
+        }
     )
 
 
@@ -278,14 +434,6 @@ try:
 
     with header_right:
 
-        source_count = len(
-            {
-                article.source_id
-                for article
-                in all_articles
-            }
-        )
-
         st.metric(
             "Sources",
             source_count,
@@ -314,8 +462,11 @@ try:
         "before approving it."
     )
 
-    # If human edits already exist, show those.
-    # Otherwise initialize from generated content.
+
+    # -----------------------------------------------------
+    # Existing human edits take priority.
+    # Otherwise initialize editor with AI generation.
+    # -----------------------------------------------------
 
     initial_title = (
         event.final_title
@@ -329,11 +480,21 @@ try:
         else event.generated_summary
     )
 
+
+    # -----------------------------------------------------
+    # Editable title
+    # -----------------------------------------------------
+
     title = st.text_input(
         "Title",
         value=initial_title,
         key=f"title_{event.id}",
     )
+
+
+    # -----------------------------------------------------
+    # Editable summary
+    # -----------------------------------------------------
 
     summary = st.text_area(
         "Summary",
@@ -344,7 +505,7 @@ try:
 
 
     # =====================================================
-    # ACTIONS
+    # ACTION BUTTONS
     # =====================================================
 
     save_col, approve_col, reject_col = (
@@ -373,6 +534,7 @@ try:
 
             st.rerun()
 
+
     with approve_col:
 
         if st.button(
@@ -381,18 +543,27 @@ try:
             use_container_width=True,
         ):
 
-            approve_event(
-                session,
-                event.id,
-                title,
-                summary,
-            )
+            try:
 
-            st.success(
-                "Event approved."
-            )
+                approve_event(
+                    session,
+                    event.id,
+                    title,
+                    summary,
+                )
 
-            st.rerun()
+                st.success(
+                    "Event approved."
+                )
+
+                st.rerun()
+
+            except ValueError as exc:
+
+                st.error(
+                    str(exc)
+                )
+
 
     with reject_col:
 
@@ -439,6 +610,233 @@ try:
 
 
     # =====================================================
+    # EVENT IMAGE
+    # =====================================================
+
+    st.divider()
+
+    st.subheader(
+        "Event image"
+    )
+
+    st.caption(
+        "Select the image that should represent "
+        "this event on the website."
+    )
+
+
+    # -----------------------------------------------------
+    # Find selected image article
+    # -----------------------------------------------------
+
+    selected_image_article = None
+
+    if event.selected_image_article_id:
+
+        for article in all_articles:
+
+            if (
+                article.article_id
+                == event.selected_image_article_id
+            ):
+
+                selected_image_article = article
+                break
+
+
+    # -----------------------------------------------------
+    # Display currently selected image
+    # -----------------------------------------------------
+
+    if selected_image_article:
+
+        st.markdown(
+            "### Selected image"
+        )
+
+        selected_left, selected_right = (
+            st.columns(
+                [2, 1]
+            )
+        )
+
+        with selected_left:
+
+            try:
+
+                st.image(
+                    selected_image_article.image_url,
+                    use_container_width=True,
+                )
+
+            except Exception:
+
+                st.warning(
+                    "Could not load selected image."
+                )
+
+        with selected_right:
+
+            st.markdown(
+                f"**{selected_image_article.source_name}**"
+            )
+
+            st.write(
+                selected_image_article.title
+            )
+
+            st.caption(
+                f"Article ID: "
+                f"{selected_image_article.article_id}"
+            )
+
+            if selected_image_article.url:
+
+                st.link_button(
+                    "Open original article ↗",
+                    selected_image_article.url,
+                    use_container_width=True,
+                )
+
+    else:
+
+        st.info(
+            "No event image selected yet."
+        )
+
+
+    # =====================================================
+    # CONTEXT IMAGE CANDIDATES
+    # =====================================================
+
+    st.markdown(
+        "### Image candidates"
+    )
+
+    st.caption(
+        "Images from articles used in the "
+        "Qwen context are shown first."
+    )
+
+
+    context_image_articles = [
+        article
+        for article in context_articles
+        if article.image_url
+    ]
+
+
+    if not context_image_articles:
+
+        st.warning(
+            "None of the context articles "
+            "contains an image."
+        )
+
+    else:
+
+        st.caption(
+            f"{len(context_image_articles)} "
+            f"context articles have images."
+        )
+
+        # Three images per row.
+
+        for start in range(
+            0,
+            len(context_image_articles),
+            3,
+        ):
+
+            batch = (
+                context_image_articles[
+                    start:start + 3
+                ]
+            )
+
+            columns = st.columns(3)
+
+            for column, article in zip(
+                columns,
+                batch,
+            ):
+
+                with column:
+
+                    render_image_candidate(
+                        article=article,
+                        event=event,
+                        session=session,
+                        button_key_prefix=(
+                            "context_image"
+                        ),
+                    )
+
+
+    # =====================================================
+    # ALL EVENT IMAGE CANDIDATES
+    # =====================================================
+
+    with st.expander(
+        "Show images from all event articles"
+    ):
+
+        all_image_articles = [
+            article
+            for article in all_articles
+            if article.image_url
+        ]
+
+        st.caption(
+            f"{len(all_image_articles)} of "
+            f"{len(all_articles)} articles "
+            f"have an image."
+        )
+
+
+        if not all_image_articles:
+
+            st.info(
+                "No images are available "
+                "for this event."
+            )
+
+        else:
+
+            # Three images per row.
+
+            for start in range(
+                0,
+                len(all_image_articles),
+                3,
+            ):
+
+                batch = (
+                    all_image_articles[
+                        start:start + 3
+                    ]
+                )
+
+                columns = st.columns(3)
+
+                for column, article in zip(
+                    columns,
+                    batch,
+                ):
+
+                    with column:
+
+                        render_image_candidate(
+                            article=article,
+                            event=event,
+                            session=session,
+                            button_key_prefix=(
+                                "all_image"
+                            ),
+                        )
+
+
+    # =====================================================
     # QWEN CONTEXT
     # =====================================================
 
@@ -453,6 +851,7 @@ try:
         f"{len(all_articles)} event articles "
         f"were provided to the model."
     )
+
 
     if not context_articles:
 
@@ -478,6 +877,11 @@ try:
             f"in the model context."
         )
 
+
+        # -------------------------------------------------
+        # Display context articles
+        # -------------------------------------------------
+
         for article in context_articles:
 
             render_article(
@@ -502,9 +906,9 @@ try:
     )
 
 
-    # -----------------------------------------------------
-    # Filters
-    # -----------------------------------------------------
+    # =====================================================
+    # COVERAGE FILTERS
+    # =====================================================
 
     sources = sorted(
         {
@@ -514,11 +918,17 @@ try:
         }
     )
 
+
     filter_col, search_col = (
         st.columns(
             [1, 2]
         )
     )
+
+
+    # -----------------------------------------------------
+    # Source filter
+    # -----------------------------------------------------
 
     with filter_col:
 
@@ -529,6 +939,11 @@ try:
                 key=f"source_{event.id}",
             )
         )
+
+
+    # -----------------------------------------------------
+    # Search titles
+    # -----------------------------------------------------
 
     with search_col:
 
@@ -545,20 +960,30 @@ try:
         )
 
 
-    # -----------------------------------------------------
-    # Apply filters
-    # -----------------------------------------------------
+    # =====================================================
+    # APPLY FILTERS
+    # =====================================================
 
     filtered_articles = []
 
     for article in all_articles:
+
+        # -------------------------------------------------
+        # Source
+        # -------------------------------------------------
 
         if (
             selected_source != "All"
             and article.source_name
             != selected_source
         ):
+
             continue
+
+
+        # -------------------------------------------------
+        # Search
+        # -------------------------------------------------
 
         if (
             search
@@ -568,17 +993,18 @@ try:
                 or ""
             ).lower()
         ):
+
             continue
+
 
         filtered_articles.append(
             article
         )
 
 
-    # -----------------------------------------------------
-    # Context IDs so we can identify articles already
-    # shown to Qwen.
-    # -----------------------------------------------------
+    # =====================================================
+    # CONTEXT IDS
+    # =====================================================
 
     context_ids = {
         article.article_id
@@ -587,19 +1013,28 @@ try:
     }
 
 
+    # =====================================================
+    # COVERAGE COUNT
+    # =====================================================
+
     st.caption(
         f"Showing "
         f"{len(filtered_articles)} articles."
     )
 
 
-    # -----------------------------------------------------
-    # Render all event articles
-    # -----------------------------------------------------
+    # =====================================================
+    # RENDER ALL ARTICLES
+    # =====================================================
 
     for article in filtered_articles:
 
         badges = []
+
+
+        # -------------------------------------------------
+        # Representative
+        # -------------------------------------------------
 
         if (
             article.article_id
@@ -610,6 +1045,11 @@ try:
                 "⭐ Representative"
             )
 
+
+        # -------------------------------------------------
+        # Qwen context
+        # -------------------------------------------------
+
         if (
             article.article_id
             in context_ids
@@ -619,11 +1059,35 @@ try:
                 "🤖 Qwen context"
             )
 
+
+        # -------------------------------------------------
+        # Event seed
+        # -------------------------------------------------
+
         if article.is_seed:
 
             badges.append(
                 "🌱 Event seed"
             )
+
+
+        # -------------------------------------------------
+        # Selected event image
+        # -------------------------------------------------
+
+        if (
+            article.article_id
+            == event.selected_image_article_id
+        ):
+
+            badges.append(
+                "🖼️ Event image"
+            )
+
+
+        # -------------------------------------------------
+        # Display badges
+        # -------------------------------------------------
 
         if badges:
 
@@ -633,10 +1097,20 @@ try:
                 )
             )
 
+
+        # -------------------------------------------------
+        # Article
+        # -------------------------------------------------
+
         render_article(
             article,
             context=False,
         )
+
+
+# =========================================================
+# CLOSE DATABASE SESSION
+# =========================================================
 
 finally:
 

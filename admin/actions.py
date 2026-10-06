@@ -103,3 +103,23 @@ def reject_event(
     )
 
     session.commit()
+
+def select_event_image(
+    session,
+    event_id: int,
+    article_id: int,
+):
+    content = session.get(
+        EventContent,
+        event_id,
+    )
+
+    if content is None:
+        raise ValueError(
+            f"EventContent not found "
+            f"for event {event_id}"
+        )
+
+    content.selected_image_article_id = article_id
+
+    session.commit()
