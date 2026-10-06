@@ -349,6 +349,11 @@ class Event(Base):
         nullable=False,
     )
 
+    representative_article_id: Mapped[int | None] = mapped_column(
+        ForeignKey("articles.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
 
 class EventArticle(Base):
     __tablename__ = "event_articles"
