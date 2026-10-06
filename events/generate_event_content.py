@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 import urllib.error
 import urllib.request
 
+from sqlalchemy import select
+
 from database.db import SessionLocal
+from database.models import (
+    Event,
+    EventContent,
+)
 
 from events.build_event_context import (
-    get_events,
     load_event_articles,
     select_context_articles,
     build_context,
@@ -20,27 +26,24 @@ from events.build_event_context import (
 # =========================================================
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
-OLLAMA_MODEL = "gpt-oss:20b"
+OLLAMA_MODEL = "qwen3:8b"
 
 MAX_CONTEXT_ARTICLES = 6
-
-# Limit the amount of text contributed by each article.
-# This prevents a few very long articles from consuming
-# the entire context window.
 MAX_BODY_CHARS = 6000
 
 TEMPERATURE = 0.2
+NUM_PREDICT = 500
 
 
 # =========================================================
-# PROMPT
+# SYSTEM PROMPT
 # =========================================================
 
 SYSTEM_PROMPT = """
 IDIOMA OBLIGATORIO: ESPAÑOL.
 
-Eres un editor de noticias paraguayo encargado de sintetizar varios
-artículos periodísticos que pertenecen al mismo evento.
+Eres un editor de noticias encargado de sintetizar varios artículos
+periodísticos que pertenecen al mismo evento.
 
 Tu tarea es producir una representación neutral, factual y conservadora
 del evento.
@@ -48,30 +51,68 @@ del evento.
 REGLAS FUNDAMENTALES:
 
 1. TODO el contenido generado debe estar escrito en español.
+
 2. Utiliza únicamente información contenida en los artículos proporcionados.
+   No utilices conocimiento externo.
+
 3. No inventes hechos, nombres, fechas, cifras, causas, motivaciones
    ni declaraciones.
-4. Distingue entre hechos reportados, afirmaciones atribuidas, hipótesis,
-   versiones contradictorias e información no confirmada.
-5. Nunca conviertas una hipótesis o versión disputada en un hecho.
-6. Para el título, utiliza únicamente hechos claramente respaldados.
-7. Si existe desacuerdo sobre la causa o circunstancias de un hecho,
-   omite esa explicación del título.
-8. Prefiere un título general y correcto antes que uno específico
-   pero incierto.
-9. El artículo representativo no es una fuente de verdad privilegiada.
-10. Cuando exista información contradictoria, exprésala como incertidumbre
-    en el resumen si es relevante.
-11. Ante la duda, omite una afirmación antes que presentarla como cierta.
-12. El título debe ser breve, descriptivo y factual.
-13. El resumen debe tener entre 2 y 4 oraciones.
 
-IMPORTANTE: responde exclusivamente en español.
+4. Distingue cuidadosamente entre:
+   - hechos reportados de forma consistente;
+   - afirmaciones atribuidas a una persona o institución;
+   - hipótesis;
+   - versiones contradictorias;
+   - información todavía no confirmada.
+
+5. NO conviertas una hipótesis, versión o explicación disputada en un hecho.
+
+6. Para el TÍTULO utiliza solamente hechos claramente respaldados
+   por los artículos seleccionados.
+
+7. Si existe desacuerdo sobre la causa, mecanismo o circunstancias
+   de un hecho, omite esa explicación del título.
+
+8. Prefiere un título más general pero correcto antes que un título
+   más específico basado en información incierta.
+
+9. El título debe representar el acontecimiento principal compartido
+   por los artículos, no el enfoque particular de un solo medio.
+
+10. El artículo marcado como REPRESENTATIVO no es una fuente de verdad
+    privilegiada. Sus afirmaciones también deben contrastarse con los
+    demás artículos.
+
+11. Si distintas fuentes presentan versiones contradictorias, el resumen
+    puede explicar el desacuerdo de manera explícita y neutral.
+
+12. Cuando una afirmación importante provenga solamente de una fuente,
+    atribúyela si decides incluirla. No la presentes como consenso.
+
+13. Evita lenguaje sensacionalista, partidista, promocional o valorativo.
+
+14. No menciones los nombres de los medios salvo que el medio sea parte
+    relevante del acontecimiento o sea necesario atribuir una afirmación.
+
+15. No escribas frases como "según los artículos proporcionados".
+
+16. No agregues antecedentes que no estén presentes en los textos.
+
+17. El resumen debe explicar qué ocurrió y priorizar la información
+    central respaldada por múltiples artículos.
+
+18. El título debe ser breve, descriptivo y factual.
+
+19. El resumen debe tener entre 2 y 4 oraciones.
+
+20. Ante la duda, OMITE una afirmación antes que presentarla como cierta.
+
+21. Responde exclusivamente en español.
 """.strip()
 
 
 # =========================================================
-# BUILD USER PROMPT
+# PROMPT
 # =========================================================
 
 def build_llm_prompt(context: dict) -> str:
@@ -80,10 +121,10 @@ def build_llm_prompt(context: dict) -> str:
 
     sections.append(
         f"EVENTO {context['event_id']}\n"
-        f"Cantidad total de artículos en el evento: "
+        f"Cantidad total de artículos: "
         f"{context['article_count']}\n"
         f"Cantidad total de medios: "
-        f"{context['source_count']}\n"
+        f"{context['source_count']}"
     )
 
     for index, article in enumerate(
@@ -102,7 +143,8 @@ def build_llm_prompt(context: dict) -> str:
             .strip()
         )
 
-        section = f"""
+        sections.append(
+            f"""
 --------------------------------------------------
 ARTÍCULO {index} — {role}
 --------------------------------------------------
@@ -114,23 +156,31 @@ Título: {article["title"]}
 Texto:
 {body}
 """.strip()
-
-        sections.append(section)
+        )
 
     sections.append(
-        """Genera ahora la representación neutral del evento.
-        Antes de escribir el título, identifica mentalmente cuál es el hecho
-        central que puede afirmarse sin depender de hipótesis o versiones
-        disputadas. El título debe describir ese hecho central. 
-        IDIOMA OBLIGATORIO: ESPAÑOL.
-        Devuelve únicamente:
-        {
-        "title": "Título en español",
-        "summary": "Resumen en español"
-        }""".strip()
+        """
+Genera ahora la representación neutral del evento.
+
+Antes de escribir el título, identifica cuál es el hecho central que
+puede afirmarse sin depender de hipótesis o versiones disputadas.
+
+El título debe describir ese hecho central.
+
+IDIOMA OBLIGATORIO: ESPAÑOL.
+
+Devuelve únicamente:
+
+{
+  "title": "Título en español",
+  "summary": "Resumen en español"
+}
+""".strip()
     )
 
-    return "\n\n".join(sections)
+    return "\n\n".join(
+        sections
+    )
 
 
 # =========================================================
@@ -138,7 +188,7 @@ Texto:
 # =========================================================
 
 def call_ollama(
-    user_prompt: str,
+    prompt: str,
 ) -> dict:
 
     payload = {
@@ -151,24 +201,19 @@ def call_ollama(
             },
             {
                 "role": "user",
-                "content": user_prompt,
+                "content": prompt,
             },
         ],
 
         "stream": False,
 
-        # Qwen3 supports thinking. We do not need it
-        # for this constrained summarization task.
         "think": False,
 
-        # Ollama can constrain the response to JSON.
         "format": "json",
 
         "options": {
             "temperature": TEMPERATURE,
-
-            # Plenty for title + short summary.
-            "num_predict": 500,
+            "num_predict": NUM_PREDICT,
         },
     }
 
@@ -186,35 +231,39 @@ def call_ollama(
         method="POST",
     )
 
+    start = time.perf_counter()
+
     try:
 
         with urllib.request.urlopen(
             request,
-            timeout=300,
+            timeout=600,
         ) as response:
 
             result = json.loads(
-                response.read().decode(
-                    "utf-8"
-                )
+                response
+                .read()
+                .decode("utf-8")
             )
 
     except urllib.error.URLError as exc:
 
         raise RuntimeError(
-            f"Could not connect to Ollama "
-            f"at {OLLAMA_URL}: {exc}"
+            f"Could not connect to Ollama: "
+            f"{exc}"
         ) from exc
 
-    message = result.get(
-        "message",
-        {},
+    elapsed = (
+        time.perf_counter()
+        - start
     )
 
-    content = message.get(
-        "content",
-        "",
-    ).strip()
+    content = (
+        result
+        .get("message", {})
+        .get("content", "")
+        .strip()
+    )
 
     if not content:
 
@@ -231,160 +280,99 @@ def call_ollama(
     except json.JSONDecodeError as exc:
 
         raise RuntimeError(
-            "Qwen returned invalid JSON:\n"
+            "Invalid JSON returned by Qwen:\n"
             f"{content}"
         ) from exc
 
-    return {
-        "title": parsed.get(
+    title = str(
+        parsed.get(
             "title",
-            ""
-        ).strip(),
+            "",
+        )
+    ).strip()
 
-        "summary": parsed.get(
+    summary = str(
+        parsed.get(
             "summary",
-            ""
-        ).strip(),
-
-        "_ollama": {
-            "model": result.get(
-                "model"
-            ),
-
-            "total_duration": result.get(
-                "total_duration"
-            ),
-
-            "load_duration": result.get(
-                "load_duration"
-            ),
-
-            "prompt_eval_count":
-                result.get(
-                    "prompt_eval_count"
-                ),
-
-            "eval_count":
-                result.get(
-                    "eval_count"
-                ),
-
-            "eval_duration":
-                result.get(
-                    "eval_duration"
-                ),
-        },
-    }
-
-
-# =========================================================
-# VALIDATION
-# =========================================================
-
-def validate_generation(
-    generation: dict,
-):
-
-    title = generation[
-        "title"
-    ]
-
-    summary = generation[
-        "summary"
-    ]
+            "",
+        )
+    ).strip()
 
     if not title:
-        raise ValueError(
+        raise RuntimeError(
             "Generated title is empty."
         )
 
     if not summary:
-        raise ValueError(
+        raise RuntimeError(
             "Generated summary is empty."
         )
 
-    if len(title) > 250:
-        raise ValueError(
-            "Generated title is unexpectedly long."
-        )
+    return {
+        "title": title,
+        "summary": summary,
 
-    if len(summary) > 2000:
-        raise ValueError(
-            "Generated summary is unexpectedly long."
-        )
+        "prompt_tokens":
+            result.get(
+                "prompt_eval_count"
+            ),
+
+        "generated_tokens":
+            result.get(
+                "eval_count"
+            ),
+
+        "elapsed_seconds":
+            round(elapsed, 2),
+    }
 
 
 # =========================================================
-# DISPLAY
+# EVENTS TO GENERATE
 # =========================================================
 
-def print_generation(
-    context,
-    generation,
+def get_events_to_generate(
+    session,
+    limit: int | None,
 ):
 
-    print()
-    print("=" * 80)
+    # EventContent is LEFT JOINed so we only select
+    # events for which no draft has been generated yet.
 
-    print(
-        f"EVENT {context['event_id']}"
+    stmt = (
+        select(Event)
+        .outerjoin(
+            EventContent,
+            EventContent.event_id
+            == Event.id,
+        )
+        .where(
+            Event.article_count > 1,
+
+            Event.representative_article_id
+            .is_not(None),
+
+            EventContent.event_id
+            .is_(None),
+        )
+
+        # Most recently active events first.
+        .order_by(
+            Event.last_seen_at.desc(),
+            Event.id.desc(),
+        )
     )
 
-    print(
-        f"Articles in event: "
-        f"{context['article_count']}"
-    )
+    if limit is not None:
 
-    print(
-        f"Sources in event: "
-        f"{context['source_count']}"
-    )
+        stmt = stmt.limit(
+            limit
+        )
 
-    print(
-        f"Articles sent to Qwen: "
-        f"{context['context_article_count']}"
-    )
-
-    print(
-        f"Sources sent to Qwen: "
-        f"{context['context_source_count']}"
-    )
-
-    print()
-    print("ORIGINAL EVENT TITLE:")
-    print(
-        context["current_title"]
-    )
-
-    print()
-    print("GENERATED TITLE:")
-    print(
-        generation["title"]
-    )
-
-    print()
-    print("GENERATED SUMMARY:")
-    print(
-        generation["summary"]
-    )
-
-    stats = generation[
-        "_ollama"
-    ]
-
-    print()
-    print(
-        "Prompt tokens:",
-        stats[
-            "prompt_eval_count"
-        ],
-    )
-
-    print(
-        "Generated tokens:",
-        stats[
-            "eval_count"
-        ],
+    return list(
+        session.scalars(
+            stmt
+        ).all()
     )
 
 
@@ -396,29 +384,18 @@ def main():
 
     parser = argparse.ArgumentParser(
         description=(
-            "Generate neutral event titles "
-            "and summaries using Qwen3 "
-            "through Ollama."
+            "Generate draft event content "
+            "using Qwen3 8B."
         )
     )
 
     parser.add_argument(
         "--limit",
         type=int,
-        default=1,
+        default=10,
         help=(
-            "Number of events to generate. "
-            "Default: 1."
-        ),
-    )
-
-    parser.add_argument(
-        "--event-id",
-        type=int,
-        default=None,
-        help=(
-            "Generate content for one "
-            "specific event."
+            "Number of drafts to generate. "
+            "Default: 10."
         ),
     )
 
@@ -426,39 +403,27 @@ def main():
         "--max-articles",
         type=int,
         default=MAX_CONTEXT_ARTICLES,
-        help=(
-            "Maximum number of articles "
-            "sent to the model."
-        ),
     )
 
     args = parser.parse_args()
-
-    print("=" * 80)
-    print("EVENT CONTENT GENERATOR")
-    print("=" * 80)
-
-    print(
-        f"Model: {OLLAMA_MODEL}"
-    )
-
-    print(
-        f"Ollama: {OLLAMA_URL}"
-    )
-
-    print(
-        f"Max context articles: "
-        f"{args.max_articles}"
-    )
 
     session = SessionLocal()
 
     try:
 
-        events = get_events(
-            session,
-            limit=args.limit,
-            event_id=args.event_id,
+        events = (
+            get_events_to_generate(
+                session,
+                args.limit,
+            )
+        )
+
+        print("=" * 80)
+        print("EVENT DRAFT GENERATOR")
+        print("=" * 80)
+
+        print(
+            f"Model: {OLLAMA_MODEL}"
         )
 
         print(
@@ -466,67 +431,144 @@ def main():
             f"{len(events)}"
         )
 
-        for event in events:
+        print()
 
-            articles = (
-                load_event_articles(
-                    session,
-                    event.id,
-                )
+        generated = 0
+        failed = 0
+
+        for index, event in enumerate(
+            events,
+            start=1,
+        ):
+
+            print("-" * 80)
+
+            print(
+                f"[{index}/{len(events)}] "
+                f"Event {event.id}"
             )
 
-            if not articles:
+            print(
+                f"Articles: "
+                f"{event.article_count}"
+            )
+
+            try:
+
+                articles = (
+                    load_event_articles(
+                        session,
+                        event.id,
+                    )
+                )
+
+                selected = (
+                    select_context_articles(
+                        articles,
+                        event.representative_article_id,
+                        max_articles=(
+                            args.max_articles
+                        ),
+                    )
+                )
+
+                context = build_context(
+                    event,
+                    articles,
+                    selected,
+                )
+
+                prompt = build_llm_prompt(
+                    context
+                )
+
+                result = call_ollama(
+                    prompt
+                )
+
+                content = EventContent(
+                    event_id=event.id,
+
+                    generated_title=(
+                        result["title"]
+                    ),
+
+                    generated_summary=(
+                        result["summary"]
+                    ),
+
+                    status="draft",
+
+                    model=OLLAMA_MODEL,
+                )
+
+                session.add(
+                    content
+                )
+
+                # Commit every generation.
+                #
+                # If the script is interrupted, everything
+                # already generated remains saved.
+                session.commit()
+
+                generated += 1
+
+                print()
+                print("TITLE:")
+                print(
+                    result["title"]
+                )
+
+                print()
+                print("SUMMARY:")
+                print(
+                    result["summary"]
+                )
+
+                print()
 
                 print(
-                    f"Event {event.id}: "
-                    f"no articles found."
+                    f"Context: "
+                    f"{context['context_article_count']} "
+                    f"articles / "
+                    f"{context['context_source_count']} "
+                    f"sources"
                 )
 
-                continue
-
-            selected = (
-                select_context_articles(
-                    articles,
-                    event.representative_article_id,
-                    max_articles=(
-                        args.max_articles
-                    ),
+                print(
+                    f"Tokens: "
+                    f"{result['prompt_tokens']} + "
+                    f"{result['generated_tokens']}"
                 )
-            )
 
-            context = build_context(
-                event,
-                articles,
-                selected,
-            )
+                print(
+                    f"Time: "
+                    f"{result['elapsed_seconds']}s"
+                )
 
-            prompt = build_llm_prompt(
-                context
-            )
+            except Exception as exc:
 
-            print()
-            print(
-                f"Generating event "
-                f"{event.id}..."
-            )
+                session.rollback()
 
-            generation = call_ollama(
-                prompt
-            )
+                failed += 1
 
-            validate_generation(
-                generation
-            )
-
-            print_generation(
-                context,
-                generation,
-            )
+                print(
+                    f"ERROR: {exc}"
+                )
 
         print()
         print("=" * 80)
-        print("DONE")
+        print("GENERATION COMPLETE")
         print("=" * 80)
+
+        print(
+            f"Generated: {generated}"
+        )
+
+        print(
+            f"Failed: {failed}"
+        )
 
     finally:
 

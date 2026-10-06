@@ -430,3 +430,56 @@ class ArticleNERStatus(Base):
         ),
         nullable=False,
     )
+
+class EventContent(Base):
+    __tablename__ = "event_content"
+
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "events.id",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+
+    generated_title: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    generated_summary: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    final_title: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    final_summary: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default="draft",
+    )
+
+    model: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+    )
+
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
