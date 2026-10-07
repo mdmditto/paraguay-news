@@ -296,15 +296,29 @@ def extract_article(
         )
     )
 
-    # Prefer precise HTML metadata.
-    #
-    # Only fall back to Trafilatura if no more precise
-    # timestamp could be found.
+# =====================================================
+# PUBLICATION DATE POLICY
+# =====================================================
+#
+# Trafilatura can infer dates from arbitrary page
+# content. This can produce incorrect publication
+# dates when the publisher does not expose explicit
+# publication metadata.
+#
+# Therefore:
+#
+#   - trust our explicit HTML metadata extraction
+#   - otherwise store no publication date
+#
+# Downstream code can safely fall back to scraped_at.
+#
     if precise_date:
-
-        article[
-            "date"
-        ] = precise_date
+        
+        article["date"] = precise_date
+        
+    else:
+        
+        article["date"] = None
 
     # =====================================================
     # DEBUG
