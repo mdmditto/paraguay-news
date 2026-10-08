@@ -396,10 +396,7 @@ class EventArticle(Base):
         nullable=False,
     )
 
-    representative_article_id: Mapped[int | None] = mapped_column(
-        ForeignKey("articles.id", ondelete="SET NULL"),
-        nullable=True,
-    )
+
 
 class ArticleNERStatus(Base):
     __tablename__ = "article_ner_status"

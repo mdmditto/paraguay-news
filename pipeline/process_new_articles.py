@@ -8,1395 +8,487 @@ from sqlalchemy import func, select
 
 from database.db import SessionLocal
 from database.models import (
-    Article,
-    ArticleEmbedding,
-    ArticleNERStatus,
-    Event,
-    EventArticle,
-    EventContent,
+    Article, ArticleEmbedding, ArticleNERStatus, Source,
+    Event, EventArticle, EventContent,
 )
-
-# =========================================================
-# EXISTING PIPELINE COMPONENTS
-# =========================================================
-
-# Adjust these two import paths ONLY if your actual files
-# are not named embeddings.generate and entities.generate.
-#
-# Based on the files you sent me:
-#   generate.py      = embeddings
-#   generate(1).py   = NER
-#
-# Rename them in your project to something unambiguous:
-#
-#   embeddings/generate.py
-#   entities/generate.py
-
 from embeddings.generate import (
-    MODEL_NAME as EMBEDDING_MODEL,
-    TASK as EMBEDDING_TASK,
-    DIMENSIONS,
-    BATCH_SIZE,
-    build_article_text,
+    MODEL_NAME as EMBEDDING_MODEL, TASK as EMBEDDING_TASK,
+    DIMENSIONS, BATCH_SIZE, build_article_text,
     load_model as load_embedding_model,
 )
-
 from entities.generate import (
-    MODEL_NAME as NER_MODEL,
-    load_ner,
+    MODEL_NAME as NER_MODEL, load_ner,
     process_article as process_ner_article,
 )
-
 from events.assign_events import (
-    EVENT_BACKFILL_START,
-    get_effective_time,
-    load_matcher,
+    EVENT_BACKFILL_START, load_matcher,
     process_article as assign_event_article,
 )
-
 from events.select_representative_articles import (
     load_event_articles as load_representative_articles,
     select_representative,
 )
-
 from events.build_event_context import (
     load_event_articles as load_context_articles,
-    select_context_articles,
-    build_context,
+    select_context_articles, build_context,
 )
-
 from events.generate_event_content import (
-    OLLAMA_MODEL,
-    MAX_CONTEXT_ARTICLES,
-    build_llm_prompt,
-    call_ollama,
-    save_event_draft,
+    MAX_CONTEXT_ARTICLES, build_llm_prompt,
+    call_ollama, save_event_draft,
 )
-
-
-# =========================================================
-# CONFIG
-# =========================================================
 
 DEFAULT_LIMIT = 100
-
 NER_COMMIT_EVERY = 25
+EVENT_COMMIT_EVERY = 25
+
+# Temporarily exclude this outlet from ALL new processing queues.
+# Existing database rows and event assignments are never deleted.
+# Remove its name from the set to re-enable processing.
+EXCLUDED_SOURCES = {"Más Encarnación"}
 
 
-# =========================================================
-# DISPLAY
-# =========================================================
-
-def print_header(title: str):
-
-    print()
-    print("=" * 70)
+def print_header(title: str) -> None:
+    print("\n" + "=" * 70)
     print(title)
     print("=" * 70)
 
 
-# =========================================================
-# NEW / INCOMPLETE ARTICLE COUNTS
-# =========================================================
-
-def count_missing_embeddings(
-    session,
-) -> int:
-
-    embedded = (
-        select(
-            ArticleEmbedding.article_id
-        )
-        .where(
-            ArticleEmbedding.model
-            == EMBEDDING_MODEL,
-            ArticleEmbedding.task
-            == EMBEDDING_TASK,
-        )
-    )
-
-    stmt = (
-        select(
-            func.count(Article.id)
-        )
-        .where(
-            ~Article.id.in_(
-                embedded
-            )
-        )
-    )
-
-    return int(
-        session.scalar(stmt)
-        or 0
+def embedded_ids_query():
+    return select(ArticleEmbedding.article_id).where(
+        ArticleEmbedding.model == EMBEDDING_MODEL,
+        ArticleEmbedding.task == EMBEDDING_TASK,
     )
 
 
-def count_missing_ner(
-    session,
-) -> int:
-
-    embedded = (
-        select(
-            ArticleEmbedding.article_id
-        )
-        .where(
-            ArticleEmbedding.model
-            == EMBEDDING_MODEL,
-            ArticleEmbedding.task
-            == EMBEDDING_TASK,
-        )
-    )
-
-    processed = (
-        select(
-            ArticleNERStatus.article_id
-        )
-        .where(
-            ArticleNERStatus.model
-            == NER_MODEL
-        )
-    )
-
-    stmt = (
-        select(
-            func.count(Article.id)
-        )
-        .where(
-            Article.id.in_(
-                embedded
-            ),
-            ~Article.id.in_(
-                processed
-            ),
-        )
-    )
-
-    return int(
-        session.scalar(stmt)
-        or 0
+def ner_ids_query():
+    return select(ArticleNERStatus.article_id).where(
+        ArticleNERStatus.model == NER_MODEL,
     )
 
 
-def count_unassigned(
-    session,
-) -> int:
+def assigned_ids_query():
+    return select(EventArticle.article_id)
 
-    embedded = (
-        select(
-            ArticleEmbedding.article_id
-        )
-        .where(
-            ArticleEmbedding.model
-            == EMBEDDING_MODEL,
-            ArticleEmbedding.task
-            == EMBEDDING_TASK,
-        )
-    )
 
-    ner_done = (
-        select(
-            ArticleNERStatus.article_id
-        )
-        .where(
-            ArticleNERStatus.model
-            == NER_MODEL
-        )
-    )
-
-    assigned = (
-        select(
-            EventArticle.article_id
-        )
-    )
-
-    effective_time = func.coalesce(
-        Article.published_at,
-        Article.scraped_at,
-    )
-
-    stmt = (
-        select(
-            func.count(Article.id)
-        )
-        .where(
-            Article.id.in_(embedded),
-            Article.id.in_(ner_done),
-            ~Article.id.in_(assigned),
-            effective_time
-            >= EVENT_BACKFILL_START,
-        )
-    )
-
-    return int(
-        session.scalar(stmt)
-        or 0
+def eligible_source_filter():
+    """Reusable SQL expression for excluding sources by exact name."""
+    if not EXCLUDED_SOURCES:
+        return True
+    return ~Article.source_id.in_(
+        select(Source.id).where(Source.name.in_(EXCLUDED_SOURCES))
     )
 
 
-# =========================================================
-# ARTICLE SELECTION
-# =========================================================
+def effective_time_expression():
+    return func.coalesce(Article.published_at, Article.scraped_at)
 
-def get_articles_missing_embeddings(
-    session,
-    limit: int,
-):
 
-    embedded = (
-        select(
-            ArticleEmbedding.article_id
-        )
-        .where(
-            ArticleEmbedding.model
-            == EMBEDDING_MODEL,
-            ArticleEmbedding.task
-            == EMBEDDING_TASK,
-        )
+def count_missing_embeddings(session):
+    return int(session.scalar(select(func.count(Article.id)).where(
+        eligible_source_filter(), ~Article.id.in_(embedded_ids_query()),
+    )) or 0)
+
+
+def count_missing_ner(session):
+    return int(session.scalar(select(func.count(Article.id)).where(
+        eligible_source_filter(), Article.id.in_(embedded_ids_query()),
+        ~Article.id.in_(ner_ids_query()),
+    )) or 0)
+
+
+def count_unassigned(session):
+    return int(session.scalar(select(func.count(Article.id)).where(
+        eligible_source_filter(), Article.id.in_(embedded_ids_query()),
+        Article.id.in_(ner_ids_query()),
+        ~Article.id.in_(assigned_ids_query()),
+        effective_time_expression() >= EVENT_BACKFILL_START,
+    )) or 0)
+
+
+def get_new_article_cohort(session, limit):
+    stmt = select(Article).where(
+        eligible_source_filter(),
+        ~Article.id.in_(embedded_ids_query()),
+    ).order_by(Article.scraped_at.desc().nullslast(), Article.id.desc()).limit(limit)
+    return list(session.scalars(stmt).all())
+
+
+def get_missing_ner_catchup(session, limit, exclude_ids=None):
+    stmt = select(Article).where(
+        eligible_source_filter(), Article.id.in_(embedded_ids_query()),
+        ~Article.id.in_(ner_ids_query()),
     )
+    if exclude_ids:
+        stmt = stmt.where(~Article.id.in_(exclude_ids))
+    return list(session.scalars(stmt.order_by(
+        Article.scraped_at.desc().nullslast(), Article.id.desc()
+    ).limit(limit)).all())
 
-    stmt = (
-        select(Article)
-        .where(
-            ~Article.id.in_(
-                embedded
-            )
-        )
-        .order_by(
-            Article.published_at.asc().nullslast(),
-            Article.id.asc(),
-        )
-        .limit(limit)
+
+def get_event_catchup_articles(session, limit, exclude_ids=None):
+    stmt = select(Article).where(
+        eligible_source_filter(), Article.id.in_(embedded_ids_query()),
+        Article.id.in_(ner_ids_query()),
+        ~Article.id.in_(assigned_ids_query()),
+        effective_time_expression() >= EVENT_BACKFILL_START,
     )
-
-    return list(
-        session.scalars(stmt).all()
-    )
-
-
-def get_articles_missing_ner(
-    session,
-    limit: int,
-):
-
-    embedded = (
-        select(
-            ArticleEmbedding.article_id
-        )
-        .where(
-            ArticleEmbedding.model
-            == EMBEDDING_MODEL,
-            ArticleEmbedding.task
-            == EMBEDDING_TASK,
-        )
-    )
-
-    processed = (
-        select(
-            ArticleNERStatus.article_id
-        )
-        .where(
-            ArticleNERStatus.model
-            == NER_MODEL
-        )
-    )
-
-    stmt = (
-        select(Article)
-        .where(
-            Article.id.in_(embedded),
-            ~Article.id.in_(processed),
-        )
-        .order_by(
-            Article.id.asc()
-        )
-        .limit(limit)
-    )
-
-    return list(
-        session.scalars(stmt).all()
-    )
+    if exclude_ids:
+        stmt = stmt.where(~Article.id.in_(exclude_ids))
+    return list(session.scalars(stmt.order_by(
+        Article.scraped_at.desc().nullslast(), Article.id.desc()
+    ).limit(limit)).all())
 
 
-def get_articles_for_event_assignment(
-    session,
-    limit: int,
-):
-
-    embedded = (
-        select(
-            ArticleEmbedding.article_id
-        )
-        .where(
-            ArticleEmbedding.model
-            == EMBEDDING_MODEL,
-            ArticleEmbedding.task
-            == EMBEDDING_TASK,
-        )
-    )
-
-    ner_done = (
-        select(
-            ArticleNERStatus.article_id
-        )
-        .where(
-            ArticleNERStatus.model
-            == NER_MODEL
-        )
-    )
-
-    assigned = (
-        select(
-            EventArticle.article_id
-        )
-    )
-
-    effective_time = func.coalesce(
-        Article.published_at,
-        Article.scraped_at,
-    )
-
-    stmt = (
-        select(Article)
-        .where(
-            Article.id.in_(embedded),
-            Article.id.in_(ner_done),
-            ~Article.id.in_(assigned),
-            effective_time
-            >= EVENT_BACKFILL_START,
-        )
-        .order_by(
-            effective_time.asc(),
-            Article.id.asc(),
-        )
-        .limit(limit)
-    )
-
-    return list(
-        session.scalars(stmt).all()
-    )
+def get_embedded_ids(session, article_ids):
+    if not article_ids:
+        return set()
+    return set(session.scalars(select(ArticleEmbedding.article_id).where(
+        ArticleEmbedding.article_id.in_(article_ids),
+        ArticleEmbedding.model == EMBEDDING_MODEL,
+        ArticleEmbedding.task == EMBEDDING_TASK,
+    )).all())
 
 
-# =========================================================
-# EMBEDDING STAGE
-# =========================================================
+def get_ner_done_ids(session, article_ids):
+    if not article_ids:
+        return set()
+    return set(session.scalars(select(ArticleNERStatus.article_id).where(
+        ArticleNERStatus.article_id.in_(article_ids),
+        ArticleNERStatus.model == NER_MODEL,
+    )).all())
 
-def run_embedding_stage(
-    session,
-    model,
-    limit: int,
-):
 
-    print_header(
-        "STAGE 1 — EMBEDDINGS"
-    )
+def get_assigned_ids(session, article_ids):
+    if not article_ids:
+        return set()
+    return set(session.scalars(select(EventArticle.article_id).where(
+        EventArticle.article_id.in_(article_ids),
+    )).all())
 
-    articles = (
-        get_articles_missing_embeddings(
-            session,
-            limit,
-        )
-    )
 
+def run_embedding_stage(session, model, articles):
+    print_header("STAGE 1 — EMBEDDINGS")
     if not articles:
-
-        print(
-            "No articles require embeddings."
-        )
-
+        print("No articles require embeddings.")
         return 0
-
-    print(
-        f"Articles to embed: "
-        f"{len(articles)}"
-    )
-
-    texts = [
-        build_article_text(article)
-        for article in articles
-    ]
-
+    print(f"Articles to embed: {len(articles)}")
+    texts = [build_article_text(a) for a in articles]
     with torch.inference_mode():
-
-        embeddings = model.encode(
-            texts,
-            task=EMBEDDING_TASK,
-            batch_size=BATCH_SIZE,
-            normalize_embeddings=True,
-            show_progress_bar=True,
+        vectors = model.encode(
+            texts, task=EMBEDDING_TASK, batch_size=BATCH_SIZE,
+            normalize_embeddings=True, show_progress_bar=True,
             convert_to_numpy=True,
         )
-
-    if embeddings.shape[1] != DIMENSIONS:
-
-        raise RuntimeError(
-            f"Expected {DIMENSIONS} dimensions, "
-            f"got {embeddings.shape[1]}."
-        )
-
-    for article, embedding in zip(
-        articles,
-        embeddings,
-    ):
-
-        row = ArticleEmbedding(
-            article_id=article.id,
-            model=EMBEDDING_MODEL,
-            task=EMBEDDING_TASK,
-            dimensions=DIMENSIONS,
-            embedding=embedding.tolist(),
-        )
-
-        session.add(row)
-
+    if vectors.shape != (len(articles), DIMENSIONS):
+        raise RuntimeError(f"Unexpected embedding shape: {vectors.shape}")
+    for article, vector in zip(articles, vectors):
+        session.add(ArticleEmbedding(
+            article_id=article.id, model=EMBEDDING_MODEL,
+            task=EMBEDDING_TASK, dimensions=DIMENSIONS,
+            embedding=vector.tolist(),
+        ))
     session.commit()
-
-    saved = len(articles)
-
-    print(
-        f"Embeddings saved: {saved}"
-    )
-
-    del embeddings
-    del texts
-
-    torch.cuda.empty_cache()
-
-    return saved
+    print(f"Embeddings saved: {len(articles)}")
+    del vectors, texts
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return len(articles)
 
 
-# =========================================================
-# NER STAGE
-# =========================================================
-
-def run_ner_stage(
-    session,
-    ner,
-    limit: int,
-):
-
-    print_header(
-        "STAGE 2 — NER"
-    )
-
-    articles = (
-        get_articles_missing_ner(
-            session,
-            limit,
-        )
-    )
-
+def run_ner_stage(session, ner, articles):
+    print_header("STAGE 2 — NER")
+    result = {"processed": 0, "entities": 0, "zero_entities": 0}
     if not articles:
-
-        print(
-            "No articles require NER."
-        )
-
-        return {
-            "processed": 0,
-            "entities": 0,
-            "zero_entities": 0,
-        }
-
-    print(
-        f"Articles to process: "
-        f"{len(articles)}"
-    )
-
-    processed = 0
-    entities = 0
-    zero_entities = 0
-
+        print("No articles require NER.")
+        return result
+    print(f"Articles to process: {len(articles)}")
     for article in articles:
-
-        entity_count = (
-            process_ner_article(
-                session,
-                ner,
-                article,
-            )
-        )
-
-        processed += 1
-        entities += entity_count
-
-        if entity_count == 0:
-            zero_entities += 1
-
-        if (
-            processed
-            % NER_COMMIT_EVERY
-            == 0
-        ):
-
+        count = process_ner_article(session, ner, article)
+        result["processed"] += 1
+        result["entities"] += count
+        result["zero_entities"] += (count == 0)
+        if result["processed"] % NER_COMMIT_EVERY == 0:
             session.commit()
-
-            print(
-                f"[{processed}/"
-                f"{len(articles)}] "
-                f"entities={entities}"
-            )
-
+            print(f"[{result['processed']}/{len(articles)}] entities={result['entities']}")
     session.commit()
-
-    print(
-        f"NER processed: {processed}"
-    )
-
-    print(
-        f"Entities saved: {entities}"
-    )
-
-    print(
-        f"Zero-entity articles: "
-        f"{zero_entities}"
-    )
-
-    return {
-        "processed": processed,
-        "entities": entities,
-        "zero_entities": zero_entities,
-    }
+    print(f"NER processed: {result['processed']}")
+    print(f"Entities saved: {result['entities']}")
+    print(f"Zero-entity articles: {result['zero_entities']}")
+    return result
 
 
-# =========================================================
-# EVENT ASSIGNMENT STAGE
-# =========================================================
-
-def run_event_stage(
-    session,
-    matcher,
-    limit: int,
-):
-
-    print_header(
-        "STAGE 3 — EVENT ASSIGNMENT"
-    )
-
-    articles = (
-        get_articles_for_event_assignment(
-            session,
-            limit,
-        )
-    )
-
+def run_event_stage(session, matcher, articles):
+    print_header("STAGE 3 — EVENT ASSIGNMENT")
+    result = {"processed": 0, "new_events": 0, "existing_events": 0,
+              "skipped": 0, "affected_event_ids": set()}
     if not articles:
-
-        print(
-            "No articles require event assignment."
+        print("No articles require event assignment.")
+        return result
+    # Choose recent articles first, then process that chosen batch chronologically.
+    articles = sorted(articles, key=lambda a: (
+        a.published_at or a.scraped_at, a.id
+    ))
+    print(f"Articles to assign: {len(articles)}")
+    for index, article in enumerate(articles, 1):
+        decision_result = assign_event_article(
+            session, matcher, article, dry_run=False,
         )
-
-        return {
-            "processed": 0,
-            "new_events": 0,
-            "existing_events": 0,
-            "skipped": 0,
-            "affected_event_ids": set(),
-        }
-
-    print(
-        f"Articles to assign: "
-        f"{len(articles)}"
-    )
-
-    new_events = 0
-    existing_events = 0
-    skipped = 0
-
-    affected_event_ids = set()
-
-    for index, article in enumerate(
-        articles,
-        start=1,
-    ):
-
-        result = assign_event_article(
-            session,
-            matcher,
-            article,
-            dry_run=False,
-        )
-
-        decision = result[
-            "decision"
-        ]
-
-        event_id = result.get(
-            "event_id"
-        )
-
+        decision = decision_result["decision"]
+        event_id = decision_result.get("event_id")
         if event_id is not None:
-
-            affected_event_ids.add(
-                int(event_id)
-            )
-
+            result["affected_event_ids"].add(int(event_id))
         if decision == "new_event":
-
-            new_events += 1
-
+            result["new_events"] += 1
         elif decision == "existing_event":
-
-            existing_events += 1
-
+            result["existing_events"] += 1
         else:
-
-            skipped += 1
-
-        # -------------------------------------------------
-        # CRITICAL:
-        #
-        # SessionLocal uses autoflush=False.
-        #
-        # Even though assign_events.py should now flush
-        # assignments itself, keeping this here makes the
-        # orchestration boundary explicit and safe.
-        # -------------------------------------------------
-
+            result["skipped"] += 1
+        result["processed"] += 1
+        # SessionLocal is configured with autoflush=False.
         session.flush()
-
-        if index % 25 == 0:
-
+        if index % EVENT_COMMIT_EVERY == 0:
             session.commit()
-
-            print(
-                f"[{index}/"
-                f"{len(articles)}] "
-                f"new={new_events} "
-                f"existing={existing_events}"
-            )
-
+            print(f"[{index}/{len(articles)}] new={result['new_events']} existing={result['existing_events']}")
     session.commit()
-
-    print(
-        f"New events: {new_events}"
-    )
-
-    print(
-        "Assigned to existing events: "
-        f"{existing_events}"
-    )
-
-    print(
-        "Affected events: "
-        f"{len(affected_event_ids)}"
-    )
-
-    return {
-        "processed": len(articles),
-        "new_events": new_events,
-        "existing_events": existing_events,
-        "skipped": skipped,
-        "affected_event_ids":
-            affected_event_ids,
-    }
+    print(f"New events: {result['new_events']}")
+    print(f"Assigned to existing events: {result['existing_events']}")
+    print(f"Affected events: {len(result['affected_event_ids'])}")
+    return result
 
 
-# =========================================================
-# REPRESENTATIVE ARTICLE STAGE
-# =========================================================
-
-def update_representatives(
-    session,
-    event_ids: set[int],
-):
-
-    print_header(
-        "STAGE 4 — REPRESENTATIVE ARTICLES"
-    )
-
+def update_representatives(session, event_ids):
+    print_header("STAGE 4 — REPRESENTATIVE ARTICLES")
+    result = {"updated": 0, "multi_article_event_ids": set()}
     if not event_ids:
-
-        print(
-            "No affected events."
-        )
-
-        return {
-            "updated": 0,
-            "multi_article_event_ids": set(),
-        }
-
-    updated = 0
-    multi_article_event_ids = set()
-
-    for event_id in sorted(
-        event_ids
-    ):
-
-        event = session.get(
-            Event,
-            event_id,
-        )
-
+        print("No affected events.")
+        return result
+    for event_id in sorted(event_ids):
+        event = session.get(Event, event_id)
         if event is None:
             continue
-
-        articles = (
-            load_representative_articles(
-                session,
-                event.id,
-            )
-        )
-
+        articles = load_representative_articles(session, event.id)
         if not articles:
             continue
-
-        # ---------------------------------------------
-        # Singleton
-        # ---------------------------------------------
-
         if len(articles) == 1:
-
-            representative_id = (
-                articles[0]["id"]
-            )
-
-        # ---------------------------------------------
-        # Multi-article event
-        # ---------------------------------------------
-
+            representative_id = articles[0]["id"]
         else:
-
-            multi_article_event_ids.add(
-                event.id
-            )
-
-            (
-                representative_id,
-                _,
-            ) = select_representative(
-                articles
-            )
-
+            result["multi_article_event_ids"].add(event.id)
+            representative_id, _ = select_representative(articles)
         if representative_id is None:
             continue
-
-        if (
-            event.representative_article_id
-            != representative_id
-        ):
-
-            event.representative_article_id = (
-                representative_id
-            )
-
-            updated += 1
-
+        if event.representative_article_id != representative_id:
+            event.representative_article_id = representative_id
+            result["updated"] += 1
     session.commit()
-
-    print(
-        f"Representatives updated: "
-        f"{updated}"
-    )
-
-    print(
-        f"Multi-article affected events: "
-        f"{len(multi_article_event_ids)}"
-    )
-
-    return {
-        "updated": updated,
-        "multi_article_event_ids":
-            multi_article_event_ids,
-    }
+    print(f"Representatives updated: {result['updated']}")
+    print(f"Multi-article affected events: {len(result['multi_article_event_ids'])}")
+    return result
 
 
-# =========================================================
-# DRAFT GENERATION STAGE
-# =========================================================
-
-def get_existing_content_statuses(
-    session,
-    event_ids: set[int],
-):
-
+def get_existing_content_statuses(session, event_ids):
     if not event_ids:
-
         return {}
-
-    stmt = (
-        select(
-            EventContent.event_id,
-            EventContent.status,
-        )
-        .where(
-            EventContent.event_id.in_(
-                event_ids
-            )
-        )
-    )
-
-    rows = session.execute(
-        stmt
-    ).all()
-
-    return {
-        int(event_id): status
-        for event_id, status
-        in rows
-    }
+    return dict(session.execute(select(
+        EventContent.event_id, EventContent.status
+    ).where(EventContent.event_id.in_(event_ids))).all())
 
 
-def generate_new_drafts(
-    session,
-    event_ids: set[int],
-):
-
-    print_header(
-        "STAGE 5 — EVENT DRAFTS"
-    )
-
+def generate_new_drafts(session, event_ids):
+    print_header("STAGE 5 — EVENT DRAFTS")
+    result = {"generated": 0, "failed": 0, "protected": Counter()}
     if not event_ids:
-
-        print(
-            "No multi-article events "
-            "require consideration."
-        )
-
-        return {
-            "generated": 0,
-            "failed": 0,
-            "protected": Counter(),
-        }
-
-    content_statuses = (
-        get_existing_content_statuses(
-            session,
-            event_ids,
-        )
-    )
-
-    generated = 0
-    failed = 0
-
-    protected = Counter()
-
-    for event_id in sorted(
-        event_ids
-    ):
-
-        event = session.get(
-            Event,
-            event_id,
-        )
-
+        print("No multi-article events require consideration.")
+        return result
+    statuses = get_existing_content_statuses(session, event_ids)
+    for event_id in sorted(event_ids):
+        event = session.get(Event, event_id)
         if event is None:
             continue
-
-        # ---------------------------------------------
-        # Protect existing editorial content.
-        # ---------------------------------------------
-
-        existing_status = (
-            content_statuses.get(
-                event.id
-            )
-        )
-
+        existing_status = statuses.get(event.id)
         if existing_status is not None:
-
-            protected[
-                existing_status
-            ] += 1
-
-            print(
-                f"Event {event.id}: "
-                f"existing content "
-                f"({existing_status}) "
-                f"left unchanged."
-            )
-
+            result["protected"][existing_status] += 1
+            print(f"Event {event.id}: existing content ({existing_status}) left unchanged.")
             continue
-
         if event.article_count <= 1:
-
             continue
-
-        if (
-            event.representative_article_id
-            is None
-        ):
-
-            print(
-                f"Event {event.id}: "
-                f"no representative article."
-            )
-
-            failed += 1
+        if event.representative_article_id is None:
+            print(f"Event {event.id}: no representative article.")
+            result["failed"] += 1
             continue
-
         try:
-
-            articles = (
-                load_context_articles(
-                    session,
-                    event.id,
-                )
-            )
-
+            articles = load_context_articles(session, event.id)
             if not articles:
-
-                raise RuntimeError(
-                    "No usable articles."
-                )
-
-            selected = (
-                select_context_articles(
-                    articles,
-                    event.representative_article_id,
-                    max_articles=(
-                        MAX_CONTEXT_ARTICLES
-                    ),
-                )
+                raise RuntimeError("No usable articles.")
+            selected = select_context_articles(
+                articles, event.representative_article_id,
+                max_articles=MAX_CONTEXT_ARTICLES,
             )
-
             if not selected:
-
-                raise RuntimeError(
-                    "No context articles selected."
-                )
-
-            context = build_context(
-                event,
-                articles,
-                selected,
-            )
-
-            prompt = build_llm_prompt(
-                context
-            )
-
-            print(
-                f"Generating event "
-                f"{event.id} with "
-                f"{len(selected)} articles..."
-            )
-
-            result = call_ollama(
-                prompt
-            )
-
-            save_event_draft(
-                session=session,
-                event=event,
-                context=context,
-                result=result,
-            )
-
-            generated += 1
-
-            print(
-                f"  Draft saved: "
-                f"{result['title']}"
-            )
-
+                raise RuntimeError("No context articles selected.")
+            context = build_context(event, articles, selected)
+            prompt = build_llm_prompt(context)
+            print(f"Generating event {event.id} with {len(selected)} articles...")
+            llm_result = call_ollama(prompt)
+            save_event_draft(session=session, event=event, context=context,
+                             result=llm_result)
+            result["generated"] += 1
+            print(f"  Draft saved: {llm_result['title']}")
         except Exception as exc:
-
             session.rollback()
-
-            failed += 1
-
-            print(
-                f"  ERROR event "
-                f"{event.id}: {exc}"
-            )
-
-    print()
-    print(
-        f"Drafts generated: {generated}"
-    )
-
-    print(
-        f"Draft failures: {failed}"
-    )
-
-    if protected:
-
-        print(
-            "Existing content protected:"
-        )
-
-        for status, count in (
-            protected.items()
-        ):
-
-            print(
-                f"  {status}: {count}"
-            )
-
-    return {
-        "generated": generated,
-        "failed": failed,
-        "protected": protected,
-    }
+            result["failed"] += 1
+            print(f"  ERROR event {event.id}: {exc}")
+    print(f"Drafts generated: {result['generated']}")
+    print(f"Draft failures: {result['failed']}")
+    if result["protected"]:
+        print(f"Existing content protected: {dict(result['protected'])}")
+    return result
 
 
-# =========================================================
-# MAIN PIPELINE
-# =========================================================
+def prepare_ner_articles(session, main_cohort, catchup_limit):
+    main_ids = {a.id for a in main_cohort}
+    done = get_ner_done_ids(session, main_ids)
+    needed = [a for a in main_cohort if a.id not in done]
+    return needed + get_missing_ner_catchup(session, catchup_limit, main_ids)
+
+
+def prepare_event_articles(session, main_cohort, ner_articles, catchup_limit):
+    candidates = {a.id: a for a in main_cohort + ner_articles}
+    ids = set(candidates)
+    ready_ids = (get_embedded_ids(session, ids)
+                 & get_ner_done_ids(session, ids)) - get_assigned_ids(session, ids)
+    ready = [a for article_id, a in candidates.items()
+             if article_id in ready_ids
+             and (a.published_at or a.scraped_at) >= EVENT_BACKFILL_START]
+    catchup = get_event_catchup_articles(session, catchup_limit, ids)
+    return list({a.id: a for a in ready + catchup}.values())
+
 
 def main():
-
     parser = argparse.ArgumentParser(
-        description=(
-            "Process new Paraguay News articles "
-            "through the production pipeline."
-        )
+        description="Incremental Paraguay News article processing pipeline."
     )
-
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=DEFAULT_LIMIT,
-        help=(
-            "Maximum number of articles to "
-            "process per stage. "
-            f"Default: {DEFAULT_LIMIT}."
-        ),
-    )
-
-    parser.add_argument(
-        "--skip-drafts",
-        action="store_true",
-        help=(
-            "Run article processing but do not "
-            "generate Qwen drafts."
-        ),
-    )
-
+    parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT,
+                        help="Main cohort size and independent catch-up batch size.")
+    parser.add_argument("--skip-drafts", action="store_true",
+                        help="Do not generate Qwen editorial drafts.")
     args = parser.parse_args()
+    if args.limit <= 0:
+        parser.error("--limit must be greater than zero")
 
-    print_header(
-        "PARAGUAY NEWS — PRODUCTION PIPELINE"
-    )
-
-    print(
-        f"Article limit per stage: "
-        f"{args.limit}"
-    )
-
-    print(
-        f"Generate drafts: "
-        f"{not args.skip_drafts}"
-    )
-
-    # =====================================================
-    # PRE-FLIGHT
-    # =====================================================
+    print_header("PARAGUAY NEWS — PRODUCTION PIPELINE")
+    print(f"Main cohort limit: {args.limit}")
+    print(f"Catch-up limit: {args.limit}")
+    print(f"Generate drafts: {not args.skip_drafts}")
+    print(f"Excluded sources: {', '.join(sorted(EXCLUDED_SOURCES)) or '(none)'}")
 
     session = SessionLocal()
-
     try:
-
-        missing_embeddings = (
-            count_missing_embeddings(
-                session
-            )
-        )
-
-        missing_ner = (
-            count_missing_ner(
-                session
-            )
-        )
-
-        unassigned = (
-            count_unassigned(
-                session
-            )
-        )
-
+        missing_embeddings = count_missing_embeddings(session)
+        missing_ner = count_missing_ner(session)
+        unassigned = count_unassigned(session)
     finally:
-
         session.close()
 
-    print()
-    print(
-        "Current backlog:"
-    )
-
-    print(
-        f"  Missing embeddings: "
-        f"{missing_embeddings}"
-    )
-
-    print(
-        f"  Missing NER: "
-        f"{missing_ner}"
-    )
-
-    print(
-        f"  Unassigned: "
-        f"{unassigned}"
-    )
-
-    # =====================================================
-    # NOTHING TO DO
-    # =====================================================
-
-    if (
-        missing_embeddings == 0
-        and missing_ner == 0
-        and unassigned == 0
-    ):
-
-        print()
-        print(
-            "Nothing to process."
-        )
-
+    print("\nCurrent backlog (excluding disabled sources):")
+    print(f"  Missing embeddings: {missing_embeddings}")
+    print(f"  Missing NER: {missing_ner}")
+    print(f"  Unassigned: {unassigned}")
+    if not (missing_embeddings or missing_ner or unassigned):
+        print("\nNothing to process.")
         return
 
-    # =====================================================
-    # LOAD MODELS ONLY WHEN NEEDED
-    # =====================================================
-
-    embedding_model = None
-    ner = None
-    matcher = None
-
-    # =====================================================
-    # DATABASE SESSION
-    # =====================================================
-
     session = SessionLocal()
-
     try:
+        main_cohort = get_new_article_cohort(session, args.limit)
+        print(f"\nMain cohort: {len(main_cohort)} articles")
+        if main_cohort:
+            times = [a.scraped_at for a in main_cohort if a.scraped_at is not None]
+            if times:
+                print(f"  Newest scraped_at: {max(times)}")
+                print(f"  Oldest scraped_at: {min(times)}")
 
-        # =================================================
-        # 1. EMBEDDINGS
-        # =================================================
-
-        if missing_embeddings > 0:
-
-            embedding_model = (
-                load_embedding_model()
-            )
-
-            embedding_count = (
-                run_embedding_stage(
-                    session,
-                    embedding_model,
-                    args.limit,
-                )
-            )
-
-            del embedding_model
-            embedding_model = None
-
-            torch.cuda.empty_cache()
-
+        if main_cohort:
+            model = load_embedding_model()
+            try:
+                embedding_count = run_embedding_stage(session, model, main_cohort)
+            finally:
+                del model
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         else:
-
-            print_header(
-                "STAGE 1 — EMBEDDINGS"
-            )
-
-            print(
-                "No articles require embeddings."
-            )
-
+            print_header("STAGE 1 — EMBEDDINGS")
+            print("No articles require embeddings.")
             embedding_count = 0
 
-        # =================================================
-        # 2. NER
-        # =================================================
-
-        current_missing_ner = (
-            count_missing_ner(
-                session
-            )
-        )
-
-        if current_missing_ner > 0:
-
-            ner = load_ner()
-
-            ner_result = (
-                run_ner_stage(
-                    session,
-                    ner,
-                    args.limit,
-                )
-            )
-
-            del ner
-            ner = None
-
-            torch.cuda.empty_cache()
-
+        ner_articles = prepare_ner_articles(session, main_cohort, args.limit)
+        if ner_articles:
+            ner_model = load_ner()
+            try:
+                ner_result = run_ner_stage(session, ner_model, ner_articles)
+            finally:
+                del ner_model
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         else:
+            print_header("STAGE 2 — NER")
+            print("No articles require NER.")
+            ner_result = {"processed": 0, "entities": 0, "zero_entities": 0}
 
-            print_header(
-                "STAGE 2 — NER"
-            )
-
-            print(
-                "No articles require NER."
-            )
-
-            ner_result = {
-                "processed": 0,
-                "entities": 0,
-                "zero_entities": 0,
-            }
-
-        # =================================================
-        # 3. EVENT ASSIGNMENT
-        # =================================================
-
-        current_unassigned = (
-            count_unassigned(
-                session
-            )
+        event_articles = prepare_event_articles(
+            session, main_cohort, ner_articles, args.limit
         )
-
-        if current_unassigned > 0:
-
+        if event_articles:
             matcher = load_matcher()
-
-            event_result = (
-                run_event_stage(
-                    session,
-                    matcher,
-                    args.limit,
-                )
-            )
-
+            event_result = run_event_stage(session, matcher, event_articles)
         else:
+            print_header("STAGE 3 — EVENT ASSIGNMENT")
+            print("No articles require event assignment.")
+            event_result = {"processed": 0, "new_events": 0,
+                            "existing_events": 0, "skipped": 0,
+                            "affected_event_ids": set()}
 
-            print_header(
-                "STAGE 3 — EVENT ASSIGNMENT"
-            )
-
-            print(
-                "No articles require "
-                "event assignment."
-            )
-
-            event_result = {
-                "processed": 0,
-                "new_events": 0,
-                "existing_events": 0,
-                "skipped": 0,
-                "affected_event_ids":
-                    set(),
-            }
-
-        # =================================================
-        # 4. REPRESENTATIVES
-        # =================================================
-
-        representative_result = (
-            update_representatives(
-                session,
-                event_result[
-                    "affected_event_ids"
-                ],
-            )
+        representatives = update_representatives(
+            session, event_result["affected_event_ids"]
         )
-
-        # =================================================
-        # 5. DRAFTS
-        # =================================================
-
         if args.skip_drafts:
-
-            print_header(
-                "STAGE 5 — EVENT DRAFTS"
-            )
-
-            print(
-                "Draft generation skipped."
-            )
-
-            draft_result = {
-                "generated": 0,
-                "failed": 0,
-                "protected": Counter(),
-            }
-
+            print_header("STAGE 5 — EVENT DRAFTS")
+            print("Draft generation skipped.")
+            drafts = {"generated": 0, "failed": 0, "protected": Counter()}
         else:
-
-            draft_result = (
-                generate_new_drafts(
-                    session,
-                    representative_result[
-                        "multi_article_event_ids"
-                    ],
-                )
+            drafts = generate_new_drafts(
+                session, representatives["multi_article_event_ids"]
             )
 
-        # =================================================
-        # SUMMARY
-        # =================================================
-
-        print_header(
-            "PIPELINE COMPLETE"
-        )
-
-        print(
-            f"Embeddings created: "
-            f"{embedding_count}"
-        )
-
-        print(
-            f"NER processed: "
-            f"{ner_result['processed']}"
-        )
-
-        print(
-            f"Event assignments: "
-            f"{event_result['processed']}"
-        )
-
-        print(
-            f"  New events: "
-            f"{event_result['new_events']}"
-        )
-
-        print(
-            f"  Existing events: "
-            f"{event_result['existing_events']}"
-        )
-
-        print(
-            f"Representatives updated: "
-            f"{representative_result['updated']}"
-        )
-
-        print(
-            f"Drafts generated: "
-            f"{draft_result['generated']}"
-        )
-
-        print()
-        print(
-            "New drafts are now available "
-            "in the Streamlit review interface."
-        )
-
+        print_header("PIPELINE COMPLETE")
+        print(f"Main cohort: {len(main_cohort)}")
+        print(f"Embeddings created: {embedding_count}")
+        print(f"NER processed: {ner_result['processed']}")
+        print(f"Event assignments: {event_result['processed']}")
+        print(f"  New events: {event_result['new_events']}")
+        print(f"  Existing events: {event_result['existing_events']}")
+        print(f"  Skipped: {event_result['skipped']}")
+        print(f"Representatives updated: {representatives['updated']}")
+        print(f"Multi-article affected events: {len(representatives['multi_article_event_ids'])}")
+        print(f"Drafts generated: {drafts['generated']}")
+        if drafts['failed']:
+            print(f"Draft failures: {drafts['failed']}")
+        print("\nRemaining backlog (excluding disabled sources):")
+        print(f"  Missing embeddings: {count_missing_embeddings(session)}")
+        print(f"  Missing NER: {count_missing_ner(session)}")
+        print(f"  Unassigned: {count_unassigned(session)}")
+        if args.skip_drafts:
+            print("\nDraft generation was skipped.")
+        elif drafts["generated"]:
+            print(f"\n{drafts['generated']} new draft(s) are available in Streamlit.")
+        else:
+            print("\nNo new editorial drafts were generated.")
     except KeyboardInterrupt:
-
         session.rollback()
-
-        print()
-        print(
-            "Pipeline interrupted."
-        )
-
-        print(
-            "Committed stages remain saved. "
-            "Run the pipeline again to resume."
-        )
-
+        print("\nPipeline interrupted. Committed stages remain saved; rerun to resume.")
     except Exception:
-
         session.rollback()
         raise
-
     finally:
-
         session.close()
 
 
