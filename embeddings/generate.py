@@ -15,34 +15,71 @@ from database.models import Article, ArticleEmbedding
 MODEL_NAME = "jinaai/jina-embeddings-v5-text-small"
 TASK = "text-matching"
 DIMENSIONS = 1024
+MAX_EMBEDDING_TOKENS = 1024
 
 # Number of articles processed before committing to PostgreSQL.
 BATCH_LIMIT = 900
 
 # Number of articles sent through the GPU at once.
-BATCH_SIZE = 8
+BATCH_SIZE = 2
 
 
 # =========================================================
 # ARTICLE TEXT
 # =========================================================
 
-def build_article_text(article: Article) -> str:
+def build_article_text(
+    article: Article,
+    tokenizer=None,
+    max_tokens: int = MAX_EMBEDDING_TOKENS,
+) -> str:
     """
-    Build the text representation used to generate
-    the article embedding.
+    Build title + body representation for embedding.
 
-    Current representation:
-        title + body
+    When a tokenizer is supplied, truncate the body so
+    the complete text stays within the token budget.
+
+    The original database article remains unchanged.
     """
 
     title = (article.title or "").strip()
     body = (article.body or "").strip()
 
-    return f"""Título: {title}
+    prefix = f"Título: {title}\n\nArtículo:\n"
 
-Artículo:
-{body}"""
+    if tokenizer is None:
+        return prefix + body
+
+    # Leave room for any special tokens added during encoding.
+    special_tokens = tokenizer.num_special_tokens_to_add(
+        pair=False
+    )
+
+    budget = max_tokens - special_tokens
+
+    prefix_ids = tokenizer.encode(
+        prefix,
+        add_special_tokens=False,
+    )
+
+    body_ids = tokenizer.encode(
+        body,
+        add_special_tokens=False,
+    )
+
+    remaining = max(0, budget - len(prefix_ids))
+
+    if len(prefix_ids) > budget:
+        prefix_ids = prefix_ids[:budget]
+        body_ids = []
+    else:
+        body_ids = body_ids[:remaining]
+
+    return tokenizer.decode(
+        prefix_ids + body_ids,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+    )
 
 
 # =========================================================
@@ -190,11 +227,16 @@ def main():
             # Build text representations
             # -------------------------------------------------
 
-            texts = [
-                build_article_text(article)
-                for article in articles
-            ]
+            tokenizer = model.tokenizer
 
+            texts = [
+                build_article_text(
+                    article,
+                    tokenizer=tokenizer,
+                    max_tokens=MAX_EMBEDDING_TOKENS,
+                )
+                for article in articles
+         ]
             print(
                 f"Generating embeddings "
                 f"(GPU batch size={BATCH_SIZE})..."

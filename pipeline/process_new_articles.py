@@ -16,7 +16,7 @@ from database.models import (
 from embeddings.generate import (
     MODEL_NAME as EMBEDDING_MODEL, TASK as EMBEDDING_TASK,
     DIMENSIONS, BATCH_SIZE, build_article_text,
-    load_model as load_embedding_model,
+    load_model as load_embedding_model, MAX_EMBEDDING_TOKENS,
 )
 from entities.generate import (
     MODEL_NAME as NER_MODEL, load_ner,
@@ -188,29 +188,56 @@ def safe_cuda_cleanup():
 
 def run_embedding_stage(session, model, articles):
     print_header("STAGE 1 — EMBEDDINGS")
+
     if not articles:
         print("No articles require embeddings.")
         return 0
+
     print(f"Articles to embed: {len(articles)}")
-    texts = [build_article_text(a) for a in articles]
+
+    # Build article text with token-aware truncation.
+    texts = [
+        build_article_text(
+            article,
+            tokenizer=model.tokenizer,
+            max_tokens=MAX_EMBEDDING_TOKENS,
+        )
+        for article in articles
+    ]
+
     with torch.inference_mode():
         vectors = model.encode(
-            texts, task=EMBEDDING_TASK, batch_size=BATCH_SIZE,
-            normalize_embeddings=True, show_progress_bar=True,
+            texts,
+            task=EMBEDDING_TASK,
+            batch_size=BATCH_SIZE,
+            normalize_embeddings=True,
+            show_progress_bar=True,
             convert_to_numpy=True,
         )
+
     if vectors.shape != (len(articles), DIMENSIONS):
-        raise RuntimeError(f"Unexpected embedding shape: {vectors.shape}")
+        raise RuntimeError(
+            f"Unexpected embedding shape: {vectors.shape}"
+        )
+
     for article, vector in zip(articles, vectors):
-        session.add(ArticleEmbedding(
-            article_id=article.id, model=EMBEDDING_MODEL,
-            task=EMBEDDING_TASK, dimensions=DIMENSIONS,
-            embedding=vector.tolist(),
-        ))
+        session.add(
+            ArticleEmbedding(
+                article_id=article.id,
+                model=EMBEDDING_MODEL,
+                task=EMBEDDING_TASK,
+                dimensions=DIMENSIONS,
+                embedding=vector.tolist(),
+            )
+        )
+
     session.commit()
+
     print(f"Embeddings saved: {len(articles)}")
+
     del vectors, texts
     safe_cuda_cleanup()
+
     return len(articles)
 
 
