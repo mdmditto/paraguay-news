@@ -13,7 +13,7 @@ echo "===== PIPELINE START: $(date) ====="
 
 $PYTHON -m pipeline.process_new_articles \
     --stage all \
-    --limit 100 \
+    --limit 300 \
     --skip-drafts
 
 echo "===== COMPLETED: $(date) ====="
