@@ -543,6 +543,7 @@ def get_embedding(
     )
 
 
+
 # =========================================================
 # CANDIDATE RETRIEVAL
 # =========================================================
@@ -558,7 +559,6 @@ def get_candidate_articles(
     )
 
     if target_time is None:
-
         return []
 
     start_time = (
@@ -571,6 +571,21 @@ def get_candidate_articles(
     effective_time = func.coalesce(
         Article.published_at,
         Article.scraped_at,
+    )
+
+    # Only consider articles that come BEFORE
+    # the target article in chronological order.
+    #
+    # If timestamps are identical, use Article.id
+    # as the tie-breaker.
+
+    chronological_condition = (
+        (effective_time < target_time)
+        |
+        (
+            (effective_time == target_time)
+            & (Article.id < target_article.id)
+        )
     )
 
     stmt = (
@@ -598,8 +613,7 @@ def get_candidate_articles(
             effective_time
             >= start_time,
 
-            effective_time
-            <= target_time,
+            chronological_condition,
 
             Article.id
             != target_article.id,
@@ -632,7 +646,6 @@ def get_candidate_articles(
             similarity
             < MIN_RETRIEVAL_SIMILARITY
         ):
-
             continue
 
         scored.append(
@@ -643,14 +656,16 @@ def get_candidate_articles(
         )
 
     scored.sort(
-        key=lambda item:
-            item[1],
-        reverse=True,
+        key=lambda item: (
+            -item[1],
+            item[0],
+        )
     )
 
     return scored[
         :TOP_K_NEIGHBORS
     ]
+
 
 
 # =========================================================
@@ -1088,6 +1103,7 @@ def create_new_event(
     session.add(
         assignment
     )
+    session.flush()
 
     return event
 
@@ -1163,6 +1179,8 @@ def assign_to_existing_event(
         )
 
     event.updated_at = now
+
+    session.flush()
 
     return event
 

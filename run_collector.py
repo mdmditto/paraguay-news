@@ -294,15 +294,49 @@ SOURCES = [
 ]
 
 
-def collect_source(source_config):
+def collect_source(
+    source_config,
+    discovered_override=None,
+    published_from=None,
+    published_to=None,
+):
+    """
+    Collect articles from one news source.
+
+    Normal mode:
+        collect_source(source_config)
+
+    Historical backfill:
+        collect_source(
+            source_config,
+            discovered_override=historical_articles,
+            published_from=date(2026, 11, 4),
+            published_to=date(2026, 11, 9),
+        )
+
+    Historical mode:
+        - Uses supplied article URLs instead of live discovery.
+        - Validates actual publication dates.
+        - Inserts only missing articles.
+        - Does not overwrite existing historical articles.
+    """
+
+    from datetime import date, datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    local_timezone = ZoneInfo("America/Asuncion")
 
     print("\n" + "=" * 70)
     print(f"COLLECTING: {source_config['name']}")
     print("=" * 70)
 
-    source = get_source_by_domain(
-        source_config["domain"]
+    historical_mode = (
+        discovered_override is not None
+        or published_from is not None
+        or published_to is not None
     )
+
+    source = get_source_by_domain(source_config["domain"])
 
     if source is None:
         print(
@@ -319,7 +353,11 @@ def collect_source(source_config):
         }
 
     try:
-        discovered = source_config["collector"]()
+        discovered = (
+            source_config["collector"]()
+            if discovered_override is None
+            else discovered_override
+        )
 
     except Exception as exc:
         print(
@@ -335,9 +373,7 @@ def collect_source(source_config):
             "failed": 1,
         }
 
-    print(
-        f"Discovered {len(discovered)} articles."
-    )
+    print(f"Discovered {len(discovered)} articles.")
 
     new_count = 0
     updated_count = 0
@@ -345,80 +381,79 @@ def collect_source(source_config):
     old_count = 0
     failed_count = 0
 
-    for item in discovered:
+    skipped_date_count = 0
+    skipped_unknown_date_count = 0
 
-        url = normalize_url(
-            item["url"]
-        )
+    for index, item in enumerate(discovered, start=1):
+
+        url = normalize_url(item["url"])
 
         if url is None:
-            print(
-                "FAILED: invalid URL"
-           )
-
+            print("FAILED: invalid URL")
             failed_count += 1
             continue
 
-        listing_title = (
-            item.get("title") or url
+        listing_title = item.get("title") or url
+
+        print(
+            f"\n[{index}/{len(discovered)}] "
+            f"{listing_title}"
         )
-
-        article_info = (
-            get_article_info_by_url(url)
-        )
-
-        existing_article_id = None
-
-        # -------------------------------------------------
-        # EXISTING ARTICLE
-        # -------------------------------------------------
-
-        if article_info is not None:
-
-            (
-                existing_article_id,
-                first_scraped_at,
-            ) = article_info
-
-            # Ensure timestamp is timezone-aware.
-            if first_scraped_at.tzinfo is None:
-                first_scraped_at = (
-                    first_scraped_at.replace(
-                        tzinfo=timezone.utc
-                    )
-                )
-
-            article_age = (
-                datetime.now(timezone.utc)
-                - first_scraped_at
-            )
-
-            # Stop checking revisions after 24 hours.
-            if article_age >= REVISION_WINDOW:
-
-                print(
-                    f"OLD: {listing_title}"
-                )
-
-                old_count += 1
-                continue
-
-        # -------------------------------------------------
-        # EXTRACT ARTICLE
-        # -------------------------------------------------
 
         try:
+            article_info = get_article_info_by_url(url)
+
+            existing_article_id = None
+
+            # ---------------------------------------------
+            # EXISTING ARTICLE
+            # ---------------------------------------------
+
+            if article_info is not None:
+
+                (
+                    existing_article_id,
+                    first_scraped_at,
+                ) = article_info
+
+                # In historical mode, an article already
+                # stored in the database does not need
+                # to be extracted again.
+                if historical_mode:
+                    print(f"ALREADY EXISTS: {url}")
+                    old_count += 1
+                    continue
+
+                if first_scraped_at.tzinfo is None:
+                    first_scraped_at = (
+                        first_scraped_at.replace(
+                            tzinfo=timezone.utc
+                        )
+                    )
+
+                article_age = (
+                    datetime.now(timezone.utc)
+                    - first_scraped_at
+                )
+
+                # Preserve normal revision behavior.
+                if article_age >= REVISION_WINDOW:
+
+                    print(f"OLD: {listing_title}")
+
+                    old_count += 1
+                    continue
+
+            # ---------------------------------------------
+            # EXTRACT ARTICLE
+            # ---------------------------------------------
+
             raw = extract_article(url)
 
             if raw is None:
 
-                print(
-                    f"FAILED: {listing_title}"
-                )
-
-                print(
-                    f"  Extraction failed: {url}"
-                )
+                print(f"FAILED: {listing_title}")
+                print(f"  Extraction failed: {url}")
 
                 failed_count += 1
                 continue
@@ -431,63 +466,141 @@ def collect_source(source_config):
 
             if not normalized["body"]:
 
-                print(
-                    f"FAILED: {listing_title}"
-                )
-
-                print(
-                    f"  Empty body: {url}"
-                )
+                print(f"FAILED: {listing_title}")
+                print(f"  Empty body: {url}")
 
                 failed_count += 1
                 continue
 
-            # -------------------------------------------------
+            # ---------------------------------------------
+            # HISTORICAL PUBLICATION DATE FILTER
+            # ---------------------------------------------
+
+            if historical_mode and (
+                published_from is not None
+                or published_to is not None
+            ):
+
+                published_at = normalized.get(
+                    "published_at"
+                )
+
+                if published_at is None:
+
+                    print(
+                        "SKIPPED: publication date "
+                        "could not be determined."
+                    )
+
+                    skipped_unknown_date_count += 1
+                    continue
+
+                if isinstance(published_at, str):
+
+                    try:
+                        published_at = datetime.fromisoformat(
+                            published_at.replace("Z", "+00:00")
+                        )
+                    except ValueError:
+
+                        print(
+                            "SKIPPED: invalid "
+                            f"publication date: {published_at}"
+                        )
+
+                        skipped_unknown_date_count += 1
+                        continue
+
+                if isinstance(published_at, datetime):
+
+                    if published_at.tzinfo is None:
+                        # Assumes naive timestamps from the
+                        # extractor represent Paraguay time.
+                        # Adjust if your extractor uses UTC.
+                        published_at = published_at.replace(
+                            tzinfo=local_timezone
+                        )
+
+                    publication_date = (
+                        published_at
+                        .astimezone(local_timezone)
+                        .date()
+                    )
+
+                elif isinstance(published_at, date):
+                    publication_date = published_at
+
+                else:
+                    print(
+                        "SKIPPED: unsupported "
+                        "publication date format."
+                    )
+
+                    skipped_unknown_date_count += 1
+                    continue
+
+                if (
+                    published_from is not None
+                    and publication_date < published_from
+                ):
+                    print(
+                        f"SKIPPED: {publication_date} "
+                        "is before the requested period."
+                    )
+
+                    skipped_date_count += 1
+                    continue
+
+                if (
+                    published_to is not None
+                    and publication_date > published_to
+                ):
+                    print(
+                        f"SKIPPED: {publication_date} "
+                        "is after the requested period."
+                    )
+
+                    skipped_date_count += 1
+                    continue
+
+            # ---------------------------------------------
             # NEW ARTICLE
-            # -------------------------------------------------
+            # ---------------------------------------------
 
             if article_info is None:
 
-                article_id = create_article(
-                    normalized
+                article_id = create_article(normalized)
+
+                print(
+                    f"NEW: {normalized['title']}"
                 )
 
                 print(
-                    f"NEW: "
-                    f"{normalized['title']}"
-                )
-
-                print(
-                    f"  Saved as article ID "
-                    f"{article_id}"
+                    f"  Saved as article ID {article_id}"
                 )
 
                 new_count += 1
 
-            # -------------------------------------------------
-            # EXISTING ARTICLE WITHIN 24 HOURS
-            # -------------------------------------------------
+            # ---------------------------------------------
+            # EXISTING ARTICLE WITHIN REVISION WINDOW
+            # ---------------------------------------------
 
             else:
 
-                changed = (
-                    update_article_if_changed(
-                        article_id=existing_article_id,
-                        article_data=normalized,
-                    )
+                changed = update_article_if_changed(
+                    article_id=existing_article_id,
+                    article_data=normalized,
                 )
 
                 if changed:
 
                     print(
-                        f"UPDATED: "
-                        f"{normalized['title']}"
+                        f"UPDATED: {normalized['title']}"
                     )
 
                     print(
-                        f"  New revision created "
-                        f"for article ID "
-                        f"{existing_article_id}"
+                        "  New revision created for "
+                        f"article ID {existing_article_id}"
                     )
 
                     updated_count += 1
@@ -495,23 +608,33 @@ def collect_source(source_config):
                 else:
 
                     print(
-                        f"UNCHANGED: "
-                        f"{normalized['title']}"
+                        f"UNCHANGED: {normalized['title']}"
                     )
 
                     unchanged_count += 1
 
         except Exception as exc:
 
-            print(
-                f"ERROR: {url}"
-            )
-
-            print(
-                f"  {exc}"
-            )
+            print(f"ERROR: {url}")
+            print(f"  {exc}")
 
             failed_count += 1
+
+    # ---------------------------------------------
+    # SOURCE SUMMARY
+    # ---------------------------------------------
+
+    print("\n" + "-" * 70)
+    print(f"SUMMARY: {source_config['name']}")
+    print("-" * 70)
+
+    print(f"New articles:           {new_count}")
+    print(f"Updated articles:       {updated_count}")
+    print(f"Unchanged articles:     {unchanged_count}")
+    print(f"Already existing / old: {old_count}")
+    print(f"Outside date range:     {skipped_date_count}")
+    print(f"Unknown dates:          {skipped_unknown_date_count}")
+    print(f"Failed:                 {failed_count}")
 
     return {
         "new": new_count,
@@ -519,8 +642,9 @@ def collect_source(source_config):
         "unchanged": unchanged_count,
         "old": old_count,
         "failed": failed_count,
+        "skipped_date": skipped_date_count,
+        "skipped_unknown_date": skipped_unknown_date_count,
     }
-
 
 def main():
 
