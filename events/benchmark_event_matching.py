@@ -160,7 +160,16 @@ def main():
         matcher = a.load_matcher()
         records = [
             {"id": int(article.id), "time": a.get_effective_time(article),
-             "entities": entity_map.get(int(article.id), set()), "matcher": matcher,
+             "entities": entity_map.get(
+                 int(article.id),
+                 {
+                     "PER": set(),
+                     "ORG": set(),
+                     "LOC": set(),
+                     "MISC": set(),
+                },
+             ),
+             "matcher": matcher,
              "title": article.title}
             for article in articles
         ]

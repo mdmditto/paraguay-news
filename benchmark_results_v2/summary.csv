@@ -1,0 +1,6 @@
+mode,articles,events,singletons,multi_article,max_size,mean_size,p95_size,max_span_hours,p95_span_hours,new_event,existing_event
+baseline,1834,1014,812,202,261,1.81,3.0,68.8,15.7,1014,820
+quality_first,1834,1017,781,236,197,1.8,4.0,68.8,20.9,1017,817
+quality_72h,1834,1017,781,236,197,1.8,4.0,68.8,20.9,1017,817
+quality_seed,1834,1018,782,236,196,1.8,4.0,68.8,20.9,1018,816
+quality_centroid,1834,1017,781,236,197,1.8,4.0,68.8,20.9,1017,817
