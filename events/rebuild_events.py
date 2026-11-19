@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--to-date", required=True)
     parser.add_argument("--commit", action="store_true", help="Persist changes (default: preview only)")
     parser.add_argument("--backup-verified", action="store_true", help="Confirm a restorable PostgreSQL backup exists")
-    parser.add_argument("--max-events", type=int, default=1500, help="Safety cap on selected event count")
+    parser.add_argument("--max-events", type=int, default=20000, help="Safety cap on selected event count")
     parser.add_argument("--allow-protected", action="store_true", help="NOT IMPLEMENTED: protected events always excluded")
     args = parser.parse_args()
     if args.allow_protected:

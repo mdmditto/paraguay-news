@@ -6,11 +6,13 @@ import unicodedata
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import joblib
 import numpy as np
 from sqlalchemy import func, select
 
+from events.event_coherence import coherent_with_seed
 from database.db import SessionLocal
 from database.models import (
     Article,
@@ -66,7 +68,22 @@ EVENT_BACKFILL_START = datetime(
 # CANDIDATE RETRIEVAL
 # =========================================================
 
-CANDIDATE_WINDOW_HOURS = 48
+# Temporary Ueno Bank / Santiago Peña crisis exception (Paraguay local time).
+NORMAL_CANDIDATE_WINDOW_HOURS = 48
+CRISIS_CANDIDATE_WINDOW_HOURS = 12
+PARAGUAY_TZ = ZoneInfo("America/Asuncion")
+CRISIS_START_LOCAL = datetime(2026, 11, 3, tzinfo=PARAGUAY_TZ)
+CRISIS_END_LOCAL = datetime(2026, 11, 18, tzinfo=PARAGUAY_TZ)  # exclusive
+
+
+def candidate_window_hours(article_time: datetime) -> int:
+    """Select lookback using article time, not the current processing date."""
+    if article_time.tzinfo is None or article_time.utcoffset() is None:
+        raise ValueError("Article effective timestamp must be timezone-aware")
+    local_time = article_time.astimezone(PARAGUAY_TZ)
+    if CRISIS_START_LOCAL <= local_time < CRISIS_END_LOCAL:
+        return CRISIS_CANDIDATE_WINDOW_HOURS
+    return NORMAL_CANDIDATE_WINDOW_HOURS
 
 TOP_K_NEIGHBORS = 20
 
@@ -78,6 +95,8 @@ MIN_RETRIEVAL_SIMILARITY = 0.75
 # =========================================================
 
 STRONG_PAIR_THRESHOLD = 0.75
+SEED_SIMILARITY_THRESHOLD = 0.84
+ENABLE_SEED_COHERENCE = True
 
 SUPPORT_PAIR_THRESHOLD = 0.50
 
@@ -543,7 +562,6 @@ def get_embedding(
     )
 
 
-
 # =========================================================
 # CANDIDATE RETRIEVAL
 # =========================================================
@@ -559,33 +577,19 @@ def get_candidate_articles(
     )
 
     if target_time is None:
+
         return []
 
     start_time = (
         target_time
         - timedelta(
-            hours=CANDIDATE_WINDOW_HOURS
+            hours=candidate_window_hours(target_time)
         )
     )
 
     effective_time = func.coalesce(
         Article.published_at,
         Article.scraped_at,
-    )
-
-    # Only consider articles that come BEFORE
-    # the target article in chronological order.
-    #
-    # If timestamps are identical, use Article.id
-    # as the tie-breaker.
-
-    chronological_condition = (
-        (effective_time < target_time)
-        |
-        (
-            (effective_time == target_time)
-            & (Article.id < target_article.id)
-        )
     )
 
     stmt = (
@@ -613,7 +617,8 @@ def get_candidate_articles(
             effective_time
             >= start_time,
 
-            chronological_condition,
+            effective_time
+            <= target_time,
 
             Article.id
             != target_article.id,
@@ -646,6 +651,7 @@ def get_candidate_articles(
             similarity
             < MIN_RETRIEVAL_SIMILARITY
         ):
+
             continue
 
         scored.append(
@@ -656,16 +662,14 @@ def get_candidate_articles(
         )
 
     scored.sort(
-        key=lambda item: (
-            -item[1],
-            item[0],
-        )
+        key=lambda item:
+            item[1],
+        reverse=True,
     )
 
     return scored[
         :TOP_K_NEIGHBORS
     ]
-
 
 
 # =========================================================
@@ -742,6 +746,58 @@ def get_event_sizes(
             article_count,
         ) in rows
     }
+
+
+# =========================================================
+# IMMUTABLE EVENT SEEDS (read-only lookups)
+# =========================================================
+
+def get_event_seeds(session, event_ids: list[int]):
+    """Return original seed articles; ambiguous/missing seeds are rejected."""
+    if not event_ids:
+        return {}
+    stmt = (
+        select(EventArticle.event_id, Article)
+        .join(Article, Article.id == EventArticle.article_id)
+        .where(EventArticle.event_id.in_(event_ids), EventArticle.is_seed.is_(True))
+        .order_by(EventArticle.event_id, Article.id)
+    )
+    seeds = {}
+    ambiguous = set()
+    for event_id, article in session.execute(stmt):
+        eid = int(event_id)
+        if eid in seeds:
+            ambiguous.add(eid)
+        else:
+            seeds[eid] = article
+    for eid in ambiguous:
+        seeds.pop(eid, None)
+    return seeds
+
+
+def filter_seed_coherent_events(session, article, target_embedding, grouped_evidence,
+                                threshold: float):
+    """Gate entire candidate events against their immutable original seeds."""
+    seeds = get_event_seeds(session, list(grouped_evidence))
+    accepted = {}
+    rejected = defaultdict(int)
+    for event_id, pairs in grouped_evidence.items():
+        seed = seeds.get(event_id)
+        if seed is None:
+            rejected['missing_or_ambiguous_seed'] += 1
+            continue
+        seed_vector = get_embedding(session, seed.id)
+        if seed_vector is None:
+            rejected['missing_seed_embedding'] += 1
+            continue
+        okay, reason, _ = coherent_with_seed(
+            article, seed, target_embedding, seed_vector, threshold=threshold
+        )
+        if okay:
+            accepted[event_id] = pairs
+        else:
+            rejected[reason] += 1
+    return accepted, dict(rejected)
 
 
 # =========================================================
@@ -1103,7 +1159,6 @@ def create_new_event(
     session.add(
         assignment
     )
-    session.flush()
 
     return event
 
@@ -1179,8 +1234,6 @@ def assign_to_existing_event(
         )
 
     event.updated_at = now
-
-    session.flush()
 
     return event
 
@@ -1337,6 +1390,14 @@ def process_article(
             article_to_event,
         )
     )
+
+    # Reject entire candidate events whose immutable seeds disagree.
+    # Unlike candidate retrieval, this checks the original event identity.
+    if ENABLE_SEED_COHERENCE and grouped_evidence:
+        grouped_evidence, seed_rejections = filter_seed_coherent_events(
+            session, article, target_embedding, grouped_evidence,
+            threshold=SEED_SIMILARITY_THRESHOLD,
+        )
 
     # -----------------------------------------------------
     # No event evidence
@@ -1571,7 +1632,73 @@ def main():
         ),
     )
 
+    parser.add_argument(
+        "--normal-window-hours", type=float, default=48,
+        help="Lookback outside the crisis (default: 48).",
+    )
+    parser.add_argument(
+        "--crisis-start", default="2026-11-03",
+        help="First crisis date in Paraguay local time (YYYY-MM-DD).",
+    )
+
+    parser.add_argument(
+        "--retrieval-threshold", type=float, default=0.75,
+        help="Minimum cosine similarity for candidate retrieval (default: 0.75).",
+    )
+    parser.add_argument(
+        "--strong-pair-threshold", type=float, default=0.75,
+        help="Strong pairwise matcher probability cutoff (default: 0.75).",
+    )
+
+    parser.add_argument(
+        "--seed-threshold", type=float, default=0.84,
+        help="Minimum cosine similarity to immutable event seed (default: 0.84).",
+    )
+    parser.add_argument(
+        "--disable-seed-coherence", action="store_true",
+        help="Disable seed similarity and headline-action gates (not recommended).",
+    )
+    parser.add_argument(
+        "--crisis-window-hours",
+        type=float,
+        default=12,
+        help="Candidate window during crisis (default: 12 hours).",
+    )
+    
+    parser.add_argument(
+        "--crisis-end",
+        default="2026-11-18",
+        help="Exclusive crisis end date in Paraguay local time.",
+    )
+
     args = parser.parse_args()
+
+    if not (0 < args.crisis_window_hours <= 168 and 0 < args.normal_window_hours <= 168):
+        parser.error("Window hours must be greater than 0 and at most 168")
+    if not (0 <= args.retrieval_threshold <= 1 and 0 <= args.strong_pair_threshold <= 1 and 0 <= args.seed_threshold <= 1):
+        parser.error("Thresholds must be between 0 and 1")
+    try:
+        crisis_start = datetime.fromisoformat(args.crisis_start)
+        crisis_end = datetime.fromisoformat(args.crisis_end)
+    except ValueError:
+        parser.error("Crisis dates must be valid ISO dates (YYYY-MM-DD)")
+    if crisis_start.time() != datetime.min.time() or crisis_end.time() != datetime.min.time():
+        parser.error("Crisis dates must use YYYY-MM-DD without a time")
+    if crisis_end <= crisis_start:
+        parser.error("Crisis end must be after crisis start")
+
+    global NORMAL_CANDIDATE_WINDOW_HOURS, CRISIS_CANDIDATE_WINDOW_HOURS
+    global CRISIS_START_LOCAL, CRISIS_END_LOCAL
+    global MIN_RETRIEVAL_SIMILARITY, STRONG_PAIR_THRESHOLD
+    global SEED_SIMILARITY_THRESHOLD, ENABLE_SEED_COHERENCE
+    NORMAL_CANDIDATE_WINDOW_HOURS = args.normal_window_hours
+    CRISIS_CANDIDATE_WINDOW_HOURS = args.crisis_window_hours
+    CRISIS_START_LOCAL = crisis_start.replace(tzinfo=PARAGUAY_TZ)
+    CRISIS_END_LOCAL = crisis_end.replace(tzinfo=PARAGUAY_TZ)
+    MIN_RETRIEVAL_SIMILARITY = args.retrieval_threshold
+    STRONG_PAIR_THRESHOLD = args.strong_pair_threshold
+    SEED_SIMILARITY_THRESHOLD = args.seed_threshold
+    ENABLE_SEED_COHERENCE = not args.disable_seed_coherence
 
     print(
         "=" * 70
@@ -1592,7 +1719,10 @@ def main():
 
     print(
         "Candidate window: "
-        f"{CANDIDATE_WINDOW_HOURS} hours"
+        f"{CRISIS_CANDIDATE_WINDOW_HOURS}h during "
+        f"{CRISIS_START_LOCAL.isoformat()} to "
+        f"{CRISIS_END_LOCAL.isoformat()} (exclusive); "
+        f"{NORMAL_CANDIDATE_WINDOW_HOURS}h otherwise"
     )
 
     print(
@@ -1604,6 +1734,9 @@ def main():
         "Minimum retrieval similarity: "
         f"{MIN_RETRIEVAL_SIMILARITY}"
     )
+
+    print(f"Strong pair probability threshold: {STRONG_PAIR_THRESHOLD}")
+    print(f"Seed coherence enabled: {ENABLE_SEED_COHERENCE}; threshold: {SEED_SIMILARITY_THRESHOLD}")
 
     print(
         f"Dry run: {args.dry_run}"
