@@ -19,6 +19,13 @@ export interface EventCard {
   article_count: number;
   source_count: number;
   latest_article_at: string;
+
+  colorado_pct: number;
+  neutro_pct: number;
+  anticolorado_pct: number;
+
+  classified_source_count: number;
+  unclassified_source_count: number;
 }
 
 export interface NewsArticle {
