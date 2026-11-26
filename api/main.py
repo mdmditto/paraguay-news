@@ -30,6 +30,12 @@ class EventCard(BaseModel):
     source_count: int
     latest_article_at: datetime
 
+    colorado_pct: float
+    neutro_pct: float
+    anticolorado_pct: float
+
+    classified_source_count: int
+    unclassified_source_count: int
 
 class ArticleItem(BaseModel):
     id: int
@@ -56,40 +62,130 @@ def list_events(
     offset: int = Query(default=0, ge=0),
 ):
     sql = text("""
+        WITH approved_events AS (
+            SELECT
+                e.id,
+                ec.final_title AS title,
+                COALESCE(
+                    selected_image.image_url,
+                    representative_image.image_url
+                ) AS image_url
+            FROM events e
+            JOIN event_content ec
+                ON ec.event_id = e.id
+            LEFT JOIN articles selected_image
+                ON selected_image.id = ec.selected_image_article_id
+            LEFT JOIN articles representative_image
+                ON representative_image.id = e.representative_article_id
+            WHERE ec.status = 'approved'
+              AND NULLIF(TRIM(ec.final_title), '') IS NOT NULL
+              AND NULLIF(TRIM(ec.final_summary), '') IS NOT NULL
+        ),
+        event_stats AS (
+            SELECT
+                ea.event_id,
+                COUNT(DISTINCT ea.article_id) AS article_count,
+                COUNT(DISTINCT a.source_id) AS source_count,
+                MAX(
+                    COALESCE(a.published_at, a.scraped_at)
+                ) AS latest_article_at
+            FROM event_articles ea
+            JOIN articles a
+                ON a.id = ea.article_id
+            GROUP BY ea.event_id
+        ),
+        event_sources AS (
+            SELECT DISTINCT
+                ea.event_id,
+                s.id AS source_id,
+                s.partidario
+            FROM event_articles ea
+            JOIN articles a
+                ON a.id = ea.article_id
+            JOIN sources s
+                ON s.id = a.source_id
+        ),
+        partisan_counts AS (
+            SELECT
+                event_id,
+                COUNT(*) FILTER (
+                    WHERE partidario IN (
+                        'Colorado', 'Neutro', 'Anticolorado'
+                    )
+                ) AS classified_source_count,
+                COUNT(*) FILTER (
+                    WHERE partidario IS NULL
+                       OR partidario NOT IN (
+                           'Colorado', 'Neutro', 'Anticolorado'
+                       )
+                ) AS unclassified_source_count,
+                COUNT(*) FILTER (
+                    WHERE partidario = 'Colorado'
+                ) AS colorado_count,
+                COUNT(*) FILTER (
+                    WHERE partidario = 'Neutro'
+                ) AS neutro_count,
+                COUNT(*) FILTER (
+                    WHERE partidario = 'Anticolorado'
+                ) AS anticolorado_count
+            FROM event_sources
+            GROUP BY event_id
+        )
         SELECT
-            e.id,
-            ec.final_title AS title,
+            ae.id,
+            ae.title,
+            ae.image_url,
+            es.article_count,
+            es.source_count,
+            es.latest_article_at,
+
             COALESCE(
-                selected_image.image_url,
-                representative_image.image_url
-            ) AS image_url,
-            COUNT(DISTINCT ea.article_id) AS article_count,
-            COUNT(DISTINCT a.source_id) AS source_count,
-            MAX(
-                COALESCE(a.published_at, a.scraped_at)
-            ) AS latest_article_at
-        FROM events e
-        JOIN event_content ec
-            ON ec.event_id = e.id
-        JOIN event_articles ea
-            ON ea.event_id = e.id
-        JOIN articles a
-            ON a.id = ea.article_id
-        LEFT JOIN articles selected_image
-            ON selected_image.id = ec.selected_image_article_id
-        LEFT JOIN articles representative_image
-            ON representative_image.id = e.representative_article_id
-        WHERE ec.status = 'approved'
-          AND NULLIF(TRIM(ec.final_title), '') IS NOT NULL
-          AND NULLIF(TRIM(ec.final_summary), '') IS NOT NULL
-        GROUP BY
-            e.id,
-            ec.final_title,
-            selected_image.image_url,
-            representative_image.image_url
-        ORDER BY latest_article_at DESC, e.id DESC
+                ROUND(
+                    100.0 * pc.colorado_count
+                    / NULLIF(pc.classified_source_count, 0),
+                    1
+                ),
+                0
+            )::float AS colorado_pct,
+
+            COALESCE(
+                ROUND(
+                    100.0 * pc.neutro_count
+                    / NULLIF(pc.classified_source_count, 0),
+                    1
+                ),
+                0
+            )::float AS neutro_pct,
+
+            COALESCE(
+                ROUND(
+                    100.0 * pc.anticolorado_count
+                    / NULLIF(pc.classified_source_count, 0),
+                    1
+                ),
+                0
+            )::float AS anticolorado_pct,
+
+            pc.classified_source_count,
+            pc.unclassified_source_count
+
+        FROM approved_events ae
+        JOIN event_stats es
+            ON es.event_id = ae.id
+        JOIN partisan_counts pc
+            ON pc.event_id = ae.id
+        ORDER BY es.latest_article_at DESC, ae.id DESC
         LIMIT :limit OFFSET :offset
     """)
+
+    with SessionLocal() as session:
+        rows = session.execute(
+            sql,
+            {"limit": limit, "offset": offset},
+        ).mappings().all()
+
+        return [dict(row) for row in rows]
+
 
     with SessionLocal() as session:
         rows = session.execute(
@@ -103,6 +199,55 @@ def list_events(
 @app.get("/api/events/{event_id}", response_model=EventDetail)
 def get_event(event_id: int):
     event_sql = text("""
+        WITH event_stats AS (
+            SELECT
+                ea.event_id,
+                COUNT(DISTINCT ea.article_id) AS article_count,
+                COUNT(DISTINCT a.source_id) AS source_count,
+                MAX(
+                    COALESCE(a.published_at, a.scraped_at)
+                ) AS latest_article_at
+            FROM event_articles ea
+            JOIN articles a ON a.id = ea.article_id
+            WHERE ea.event_id = :event_id
+            GROUP BY ea.event_id
+        ),
+        source_labels AS (
+            SELECT DISTINCT
+                ea.event_id,
+                s.id AS source_id,
+                s.partidario
+            FROM event_articles ea
+            JOIN articles a ON a.id = ea.article_id
+            JOIN sources s ON s.id = a.source_id
+            WHERE ea.event_id = :event_id
+        ),
+        partisan_stats AS (
+            SELECT
+                event_id,
+                COUNT(*) FILTER (
+                    WHERE partidario IN (
+                        'Colorado', 'Neutro', 'Anticolorado'
+                    )
+                ) AS classified_source_count,
+                COUNT(*) FILTER (
+                    WHERE partidario IS NULL
+                       OR partidario NOT IN (
+                           'Colorado', 'Neutro', 'Anticolorado'
+                       )
+                ) AS unclassified_source_count,
+                COUNT(*) FILTER (
+                    WHERE partidario = 'Colorado'
+                ) AS colorado_count,
+                COUNT(*) FILTER (
+                    WHERE partidario = 'Neutro'
+                ) AS neutro_count,
+                COUNT(*) FILTER (
+                    WHERE partidario = 'Anticolorado'
+                ) AS anticolorado_count
+            FROM source_labels
+            GROUP BY event_id
+        )
         SELECT
             e.id,
             ec.final_title AS title,
@@ -111,34 +256,52 @@ def get_event(event_id: int):
                 selected_image.image_url,
                 representative_image.image_url
             ) AS image_url,
-            COUNT(DISTINCT ea.article_id) AS article_count,
-            COUNT(DISTINCT a.source_id) AS source_count,
-            MAX(
-                COALESCE(a.published_at, a.scraped_at)
-            ) AS latest_article_at
+            es.article_count,
+            es.source_count,
+            es.latest_article_at,
+
+            COALESCE(
+                ROUND(
+                    100.0 * ps.colorado_count /
+                    NULLIF(ps.classified_source_count, 0), 1
+                ), 0
+            )::float AS colorado_pct,
+
+            COALESCE(
+                ROUND(
+                    100.0 * ps.neutro_count /
+                    NULLIF(ps.classified_source_count, 0), 1
+                ), 0
+            )::float AS neutro_pct,
+
+            COALESCE(
+                ROUND(
+                    100.0 * ps.anticolorado_count /
+                    NULLIF(ps.classified_source_count, 0), 1
+                ), 0
+            )::float AS anticolorado_pct,
+
+            ps.classified_source_count,
+            ps.unclassified_source_count
+
         FROM events e
         JOIN event_content ec
             ON ec.event_id = e.id
-        JOIN event_articles ea
-            ON ea.event_id = e.id
-        JOIN articles a
-            ON a.id = ea.article_id
+        JOIN event_stats es
+            ON es.event_id = e.id
+        JOIN partisan_stats ps
+            ON ps.event_id = e.id
         LEFT JOIN articles selected_image
             ON selected_image.id = ec.selected_image_article_id
         LEFT JOIN articles representative_image
             ON representative_image.id = e.representative_article_id
+
         WHERE e.id = :event_id
           AND ec.status = 'approved'
           AND NULLIF(TRIM(ec.final_title), '') IS NOT NULL
           AND NULLIF(TRIM(ec.final_summary), '') IS NOT NULL
-        GROUP BY
-            e.id,
-            ec.final_title,
-            ec.final_summary,
-            selected_image.image_url,
-            representative_image.image_url
     """)
-
+    
     articles_sql = text("""
         SELECT
             a.id,

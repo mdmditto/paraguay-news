@@ -517,3 +517,8 @@ class EventContentContext(Base):
         nullable=False,
         default=False,
     )
+
+    partidario: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+    )

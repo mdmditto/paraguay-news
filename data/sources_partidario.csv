@@ -1,0 +1,46 @@
+id,name,domain,source_type,institutional_class,language,country,ownership,ownership_group,logo_url,is_active,partidario
+1,ABC Color,abc.com.py,NULL,NULL,NULL,NULL,Editorial Azeta S.A.,Zucolillo,NULL,TRUE,Anticolorado
+2,脷ltima Hora,ultimahora.com,NULL,NULL,NULL,NULL,Editorial El Pa韘 S.A.,AJ Vierci,NULL,TRUE,Anticolorado
+3,La Naci贸n,lanacion.com.py,NULL,NULL,NULL,NULL,Naci髇 Media,Cartes,NULL,TRUE,Colorado
+4,HOY,hoy.com.py,NULL,NULL,NULL,NULL,Naci髇 Media,Cartes,NULL,TRUE,Colorado
+5,NPY,npy.com.py,NULL,NULL,NULL,NULL,NULL,AJ Vierci,NULL,TRUE,Anticolorado
+6,UNICANAL,unicanal.com.py,NULL,NULL,NULL,NULL,NULL,JBB,NULL,TRUE,Neutro
+9,Monumental,monumental.com.py,NULL,NULL,NULL,NULL,NULL,AJ Vierci,NULL,TRUE,Anticolorado
+10,5D铆as,5dias.com.py,NULL,NULL,NULL,NULL,Editorial de Negocios S. A.,Rodr韌uez,NULL,TRUE,Neutro
+11,Telefuturo,telefuturo.com.py,NULL,NULL,NULL,NULL,NULL,AJ Vierci,NULL,TRUE,Anticolorado
+8,Agencia IP,ip.gov.py,NULL,NULL,NULL,NULL,NULL,Estado,NULL,TRUE,Colorado
+12,El Independiente,independiente.com.py,NULL,NULL,NULL,NULL,Editorial de Negocios S. A.,Rodr韌uez,NULL,TRUE,Neutro
+13,Resumen de Noticias,rdn.com.py,NULL,NULL,NULL,NULL,Teledifusora Paraguaya,Chena,NULL,TRUE,Neutro
+14,adn,adn.com.py,NULL,NULL,NULL,NULL,NULL,NULL,NULL,TRUE,Colorado
+15,La Tribuna,latribuna.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Colorado
+16,Megacadena,megacadena.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
+17,Popular,popular.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Colorado
+18,La Jornada,lajornada.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Colorado
+19,Diario Paraguayo Noticias,dpn.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Colorado
+20,Extra,extra.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Colorado
+21,Cr贸nica,cronica.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Colorado
+22,El Poder,elpoder.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
+23,El Observador,elobservador.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Anticolorado
+24,La Clave,laclave.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Anticolorado
+25,CDE Hot,cdehot.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Colorado
+26,Ahora CDE,ahoracde.com,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Colorado
+27,TN Press,tnpress.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
+31,Noticias CDE,noticiascde.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Anticolorado
+32,Primera Plana,diarioprimeraplana.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
+33,Amambay Digital,amambaydigital.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
+34,Pedro Juan Digital,pedrojuandigital.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
+35,Amambay News,amambaynews.com,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
+36,Amambay Ahora,amambayahora.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
+37,Oviedo Press,oviedopress.com,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
+38,Caazapa Ahora,caazapaahora.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
+39,Luque Noticias,luquenoticias.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
+40,San Lorenzo Py,sanlorenzopy.com,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Anticolorado
+41,San Lorenzo Hoy,sanlorenzohoy.com,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Anticolorado
+42,QAP Chaco News,qapchaconews.com,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
+43,Concepci贸n al D铆a,concepcionaldia.com,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
+44,Itap煤a en Noticias,itapuanoticias.tv,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
+45,M谩s Encarnaci贸n,masencarnacion.com,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
+46,Digital Misiones,digitalmisiones.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
+47,Red Digital San Pedro,reddigitalsanpedro.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
+48,The Asuncion Times,theasunciontimes.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Colorado
+49,脩anduti,nanduti.com.py,NULL,NULL,NULL,NULL,NULL,,NULL,TRUE,Neutro
