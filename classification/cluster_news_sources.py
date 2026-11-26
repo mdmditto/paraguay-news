@@ -60,6 +60,19 @@ def load_embeddings():
           AND e.task = :task
           AND e.dimensions = :dimensions
           AND e.embedding IS NOT NULL
+          AND a.source != 'Amambay News'
+          AND a.source != 'Amambay Ahora'
+          AND a.source != 'Ahora CDE'
+          AND a.source != 'Oviedo Press'
+          AND a.source != 'Concepción al Día'
+          AND a.source != 'Itapúa en Noticias'
+          AND a.source != 'QAP Chaco News'
+          AND a.source != 'Pedro Juan Digital'
+          AND a.source != 'Red Digital San Pedro'
+          AND a.source != 'La Clave'
+          AND a.source != 'San Lorenzo Hoy'
+          AND a.source != 'Primera Plana'
+          AND a.source != 'TN Press'
         ORDER BY a.source_id, a.article_id
     """)
 
