@@ -4,6 +4,8 @@ import { Suspense } from "react";
 import { getEvents } from "@/lib/api";
 import PartisanBar from "@/components/PartisanBar";
 import { Libre_Baskerville } from "next/font/google";
+import CoverageVisualization from "@/components/CoverageVisualization";
+import densityData from "@/lib/event_45607_density.json";
 
 const libreBaskerville = Libre_Baskerville({
   subsets: ["latin"],
@@ -24,11 +26,11 @@ async function EventFeed() {
   return (
     <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
       {events.map((event) => (
-        <Link
+        <article
           key={event.id}
-          href={`/events/${event.id}`}
           className="group relative block aspect-[4/5] overflow-hidden rounded-xl bg-gray-800 shadow-md"
         >
+          {/* Background image */}
           {event.image_url && (
             <img
               src={event.image_url}
@@ -37,11 +39,18 @@ async function EventFeed() {
             />
           )}
 
-          {/* Dark gradient over image */}
+          {/* Dark gradient */}
           <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/40 to-transparent" />
 
+          {/* Clickable card background */}
+          <Link
+            href={`/events/${event.id}`}
+            className="absolute inset-0 z-10"
+            aria-label={event.title}
+          />
+
           {/* Event information */}
-          <div className="absolute inset-x-0 bottom-0 p-5 text-white">
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 p-5 text-white">
 
             {/* Article and source counts */}
             <div className="mb-3 flex flex-wrap gap-2">
@@ -59,13 +68,28 @@ async function EventFeed() {
               {event.title}
             </h2>
 
-            {/* Partisan distribution */}
+            {/* Coverage visualization */}
             <div className="mt-4">
-              <PartisanBar
-                colorado={event.colorado_pct}
-                neutro={event.neutro_pct}
-                anticolorado={event.anticolorado_pct}
-              />
+
+              {Number(event.id) === 45607 ? (
+                <div className="pointer-events-auto p-1">
+                  <CoverageVisualization
+                    colorado={event.colorado_pct}
+                    neutro={event.neutro_pct}
+                    anticolorado={event.anticolorado_pct}
+                    outlets={densityData.outlets}
+                    domain={densityData.domain as [number, number]}
+                    bandwidth={densityData.bandwidth}
+                    font-weight="bold"/>
+                </div>
+              ) : (
+                <PartisanBar
+                  colorado={event.colorado_pct}
+                  neutro={event.neutro_pct}
+                  anticolorado={event.anticolorado_pct}
+                />
+              )}
+
             </div>
 
             {/* Classification coverage */}
@@ -78,7 +102,7 @@ async function EventFeed() {
             )}
 
           </div>
-        </Link>
+        </article>
       ))}
     </div>
   );

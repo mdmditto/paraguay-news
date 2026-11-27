@@ -11,22 +11,24 @@ export default function PartisanBar({
   anticolorado,
 }: PartisanBarProps) {
   const values = [
-    {
-      label: "Pro",
-      value: colorado,
-      color: "#fa2d1a",
-      text: "#FFFFFF",
-    },
-    {
-      label: "Neutro",
-      value: neutro,
-      color: "#fff3e1",
-      text: "#202020",
-    },
+    
+   
     {
       label: "Crítico",
       value: anticolorado,
       color: "#2e4c8c",
+      text: "#FFFFFF",
+    },
+     {
+      label: "Neutro",
+      value: neutro,
+      color: "#ffffff",
+      text: "#202020",
+    },
+    {
+      label: "Pro",
+      value: colorado,
+      color: "#fa2d1a",
       text: "#FFFFFF",
     },
   ];
